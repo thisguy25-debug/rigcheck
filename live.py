@@ -34,7 +34,7 @@ $counters = @('\Processor(*)\% Processor Time',
               '\PhysicalDisk(_Total)\% Idle Time')
 $i = 0; $sensors = @()
 while ($true) {
-  $r = Get-Counter -Counter $counters -MaxSamples 1
+  $r = Get-Counter -Counter $counters -SampleInterval __IV__ -MaxSamples 1
   $o = @{cores=@(); total=0; perf=0; gpu=0; vram=0; rx=0; tx=0; dr=0; dw=0; idle=100}
   foreach ($s in $r.CounterSamples) {
     $p = $s.Path; $v = $s.CookedValue
@@ -123,7 +123,8 @@ def _pick_sensors(sensors):
 class LiveMonitor:
     """Calls on_sample(dict) about once a second until stopped."""
 
-    def __init__(self, info, on_sample):
+    def __init__(self, info, on_sample, interval=1):
+        self.interval = max(1, int(interval))
         self.info = info
         self.on_sample = on_sample
         self._stop = threading.Event()
@@ -138,14 +139,15 @@ class LiveMonitor:
         if shutil.which("nvidia-smi"):
             nv = subprocess.Popen(
                 ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,clocks.gr,fan.speed,power.draw,"
-                 "memory.used,memory.total", "--format=csv,noheader,nounits", "-l", "1"],
+                 "memory.used,memory.total", "--format=csv,noheader,nounits", "-l", str(self.interval)],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True,
                 creationflags=NO_WINDOW)
             self._procs.append(nv)
             threading.Thread(target=self._read_nvidia, args=(nv,), daemon=True).start()
         threading.Thread(target=self._slow_loop, daemon=True).start()
         if WINDOWS:
-            ps = subprocess.Popen(["powershell", "-NoProfile", "-Command", _PS_LOOP], stdout=subprocess.PIPE,
+            script = _PS_LOOP.replace("__IV__", str(self.interval))
+            ps = subprocess.Popen(["powershell", "-NoProfile", "-Command", script], stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True,
                                   creationflags=NO_WINDOW)
             self._procs.append(ps)
@@ -272,7 +274,7 @@ class LiveMonitor:
     def _read_psutil(self):
         psutil.cpu_percent(percpu=True)
         net0, disk0, t0 = psutil.net_io_counters(), psutil.disk_io_counters(), time.time()
-        while not self._stop.wait(1.0):
+        while not self._stop.wait(self.interval):
             t = time.time()
             dt = max(t - t0, 0.001)
             cores = psutil.cpu_percent(percpu=True)

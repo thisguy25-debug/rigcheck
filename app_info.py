@@ -9,7 +9,7 @@ import json
 import re
 import urllib.request
 
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.5.0"
 UPDATE_REPO = "thisguy25-debug/rigcheck"
 
 

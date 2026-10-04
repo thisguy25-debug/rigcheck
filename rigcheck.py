@@ -10,6 +10,7 @@ import contextlib
 import datetime
 import io
 import json
+import os
 import re
 import sys
 import time
@@ -33,8 +34,7 @@ except ImportError as e:
                                      "Keep all of the RigCheck .py files in the same folder.")
     sys.exit(1)
 
-PROFILE_LABELS = {"general": "Everyday use", "dev": "Programming",
-                  "gaming": "Gaming", "creative": "Creative work"}
+PROFILE_LABELS = gc.PROFILE_LABELS
 PROFILE_WORDS = {"general": "everyday use", "dev": "programming", "gaming": "gaming",
                  "creative": "creative work"}
 STATUS_STYLE = {  # icon, label, color
@@ -45,7 +45,7 @@ STATUS_STYLE = {  # icon, label, color
     "new": ("+", "Needs a new motherboard and RAM", COLORS["info"]),
 }
 PAGES = ["Monitor", "Overview", "Speed-ups", "Budget", "Disk space", "Health", "Performance", "Updates", "Games",
-         "Share", "History"]
+         "Share", "History", "Settings"]
 PAGE_TITLES = {"Monitor": "Live monitor", "Speed-ups": "Free speed-ups", "Budget": "Budget planner"}
 GUIDE_FOR = {"RAM": ("RAM", "How to install memory"), "Storage": ("Storage", "How to install an SSD"),
              "GPU": ("GPU", "How to install a graphics card"), "CPU": ("CPU", "How to install a processor"),
@@ -300,11 +300,13 @@ def draw_logo(canvas, color):
 class AdvisorApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        gc.init_theme(self)
-        self.title("RigCheck")
-        self.geometry(f"{px(1200)}x{px(820)}")
-        self.minsize(px(980), px(640))
         self.settings = hw_store.load_settings()
+        self.started_text_size = self.settings.get("text_size") or "Normal"
+        gc.init_theme(self, self.started_text_size, self.settings.get("temp_unit") or "C")
+        self.title("RigCheck")
+        sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
+        self.geometry(f"{min(px(1200), sw - 40)}x{min(px(820), sh - 80)}")
+        self.minsize(min(px(980), sw - 40), min(px(640), sh - 80))
         self.hw = None
         self.recs = []
 
@@ -333,7 +335,11 @@ class AdvisorApp(tk.Tk):
                     self.share_tab):
             self.notebook.add(tab)
         self._build_history()
-        self.select_page("Overview")
+        import gui_settings
+        self.settings_tab = gui_settings.SettingsTab(self.notebook, self)
+        self.notebook.add(self.settings_tab)
+        start = self.settings.get("start_page") or "Overview"
+        self.select_page(start if start in PAGES else "Overview")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         gc.dark_title_bar(self)
         self.after(200, self.start_scan)
@@ -359,6 +365,20 @@ class AdvisorApp(tk.Tk):
         self.page_title.configure(text=PAGE_TITLES.get(name, name))
         if getattr(self, "base_status", None):
             self.status.configure(text=self.base_status)
+
+    def restart(self):
+        """Close and reopen RigCheck (used after changing text size or resetting settings)."""
+        import subprocess
+        if getattr(sys, "frozen", False):
+            cmd = [sys.executable]
+        else:
+            cmd = [sys.executable, os.path.abspath(sys.argv[0])]
+        try:
+            subprocess.Popen(cmd, creationflags=hwa.NO_WINDOW, stdin=subprocess.DEVNULL,
+                             close_fds=True)
+        except OSError as e:
+            messagebox.showerror("RigCheck", f"RigCheck couldn't restart itself. Please reopen it.\n\n{e}")
+        self.on_close()
 
     def select_page(self, name):
         self.select_tab(PAGES.index(name))
@@ -392,6 +412,8 @@ class AdvisorApp(tk.Tk):
         if not app_info.UPDATE_REPO:
             return
         self.after(4 * 3600 * 1000, self.check_app_update)
+        if not self.settings.get("auto_update_check", True):
+            return
         if getattr(self, "_update_banner", None):
             return  # already showing one
 

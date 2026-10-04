@@ -279,13 +279,13 @@ class HealthTab(ttk.Frame):
             if d.get("hours"):
                 facts.append(f"{d['hours']:,} hours powered on")
             if d.get("temp"):
-                facts.append(f"{d['temp']}°C")
+                facts.append(gc.fmt_temp(d["temp"]))
             if d.get("firmware"):
                 facts.append(f"firmware {d['firmware']}")
             if facts:
                 o.write(gc.sentence(", ".join(facts)) + "\n", "indent")
             for r in d["reasons"]:
-                o.write(f"• {r}\n", "indent")
+                o.write(f"• {gc.convert_temps(r)}\n", "indent")
             if d["verdict"] == "Bad":
                 o.colored("Back up this drive now and plan to replace it.\n", "bad")
             o.write("\n", "gap")
@@ -298,14 +298,14 @@ class HealthTab(ttk.Frame):
 
         o.write("\nTemperatures\n", "h1")
         if sensors["cpu_temp"] is not None:
-            o.write(f"CPU: {sensors['cpu_temp']}°C", "bold")
+            o.write(f"CPU: {gc.fmt_temp(sensors['cpu_temp'], 1)}", "bold")
             o.write(f"   (source: {sensors['cpu_source']})\n", "muted")
         else:
             o.write("CPU temperature isn't available without a helper. Install and run ", "muted")
             o.link("LibreHardwareMonitor", "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases")
             o.write(" (free); the app reads its sensors automatically while it's open.\n", "muted")
         for g in sensors["gpus"]:
-            bits = [f"{g['temp']:.0f}°C" if g["temp"] is not None else None,
+            bits = [gc.fmt_temp(g["temp"]) if g["temp"] is not None else None,
                     f"{g['util']:.0f}% busy" if g["util"] is not None else None,
                     f"{g['power']:.0f} W" if g["power"] is not None else None,
                     f"fan {g['fan']:.0f}%" if g["fan"] is not None else None]
@@ -313,7 +313,7 @@ class HealthTab(ttk.Frame):
             o.write(", ".join(b for b in bits if b) + "\n")
         for level, text in sensors["findings"]:
             o.badge(level, level)
-            o.write(f"  {text}\n")
+            o.write(f"  {gc.convert_temps(text)}\n")
         o.write("\nTemperatures at idle don't tell you much. Check again right after gaming, or use "
                 "the Performance tab's monitor while you play.\n", "small")
         o.done()
@@ -425,7 +425,7 @@ class PerformanceTab(ttk.Frame):
                  f"busiest core {s['core_max']:.0f}%" if s.get("core_max") is not None else "",
                  f"GPU {s['gpu']:.0f}%" if s.get("gpu") is not None else "",
                  f"RAM {s['ram']:.0f}%" if s.get("ram") is not None else "",
-                 f"GPU {s['gpu_temp']:.0f}°C" if s.get("gpu_temp") else ""]
+                 f"GPU {gc.fmt_temp(s['gpu_temp'])}" if s.get("gpu_temp") else ""]
         mins = int((time.time() - self.started) // 60)
         b = hw_tools.breakdown(self.monitor.samples) if self.monitor else None
         so_far = ""
@@ -450,6 +450,7 @@ class PerformanceTab(ttk.Frame):
                     {"GPU": "MEDIUM", "CPU": "MEDIUM", "None": "LOW"}[res["bottleneck"]])
             o.write("  ")
         o.write(res["verdict"] + "\n")
+        res["details"] = [gc.convert_temps(d) for d in res["details"]]
         if res.get("breakdown"):
             o.write("\nWhat limited your frame rate\n", "label")
             bar = gc.BottleneckBar(o.text, width=560)

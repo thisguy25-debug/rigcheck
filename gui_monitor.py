@@ -296,9 +296,17 @@ class MonitorTab(ttk.Frame):
                     self.start()
             in_thread(self, lambda: live.static_info(self.app.hw), done)
             return
-        self.monitor = live.LiveMonitor(self.info, lambda s: self.after(0, self._update, s))
+        iv = int(self.app.settings.get("monitor_interval") or 1)
+        self.monitor = live.LiveMonitor(self.info, lambda s: self.after(0, self._update, s), interval=iv)
         self.monitor.start()
-        self.state.configure(text=self.monitor.note or "Live. Updates every second.")
+        self.state.configure(text=self.monitor.note or
+                             ("Live. Updates every second." if iv == 1 else f"Live. Updates every {iv} seconds."))
+
+    def restart_monitor(self):
+        """Apply a new update speed right away."""
+        if self.monitor:
+            self.stop()
+            self.start()
 
     def stop(self):
         if self.monitor:
@@ -361,7 +369,7 @@ class MonitorTab(ttk.Frame):
         # CPU
         self.cpu_ring.set(s.get("cpu_load"))
         t = s.get("cpu_temp")
-        self.cpu_stats["Temperature"].configure(text=f"{t:.0f}°C" if t is not None else "–",
+        self.cpu_stats["Temperature"].configure(text=gc.fmt_temp(t),
                                                 fg=temp_color(t, 80, 92) if t is not None else MUTED)
         clk = s.get("cpu_clock")
         self.cpu_stats["Clock speed"].configure(text=f"{clk / 1000:.2f} GHz" if clk else "–")
@@ -380,7 +388,7 @@ class MonitorTab(ttk.Frame):
         # GPU
         self.gpu_ring.set(s.get("gpu_load"))
         gt = s.get("gpu_temp")
-        self.gpu_stats["Temperature"].configure(text=f"{gt:.0f}°C" if gt is not None else "–",
+        self.gpu_stats["Temperature"].configure(text=gc.fmt_temp(gt),
                                                 fg=temp_color(gt, 78, 87) if gt is not None else MUTED)
         self.gpu_stats["Clock speed"].configure(text=f"{s['gpu_clock']:,.0f} MHz" if s.get("gpu_clock") else "–")
         self.gpu_stats["Power"].configure(text=f"{s['gpu_power']:.0f} W" if s.get("gpu_power") else "–")
@@ -429,7 +437,7 @@ class MonitorTab(ttk.Frame):
         cores = s.get("cpu_cores") or []
         self.recent.append({"gpu": s.get("gpu_load"), "cpu": s.get("cpu_load"),
                             "core_max": max(cores) if cores else s.get("cpu_load")})
-        del self.recent[:-30]
+        del self.recent[:-max(5, 30 // int(self.app.settings.get("monitor_interval") or 1))]
         b = hw_tools.breakdown(self.recent)
         if s.get("gpu_load") is None and not any(r["gpu"] for r in self.recent):
             self.bn_text.configure(text="Bottleneck: graphics usage isn't available on this PC")

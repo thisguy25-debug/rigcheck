@@ -53,8 +53,20 @@ DEFAULT_SETTINGS = {
     "gpu_max_length_mm": None,  # free space in the case for a graphics card
     "budget": 800,
     "price_overrides": {},      # {"part name": price}
-    "monitor_interval": 1.0,
+    "monitor_interval": 1,      # seconds between live monitor updates
+    "start_page": "Overview",
+    "temp_unit": "C",
+    "text_size": "Normal",
+    "auto_update_check": True,
 }
+
+
+def reset_settings():
+    save_settings(dict(DEFAULT_SETTINGS))
+
+
+def clear_history():
+    _save("history.json", [])
 
 
 def load_settings():

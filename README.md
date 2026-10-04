@@ -12,6 +12,7 @@ analyzer, shareable rig cards and friend comparisons.
 |---|---|
 | `rigcheck.py` | The app window. **Run this one.** |
 | `live.py`, `gui_monitor.py` | The Live monitor page |
+| `gui_settings.py` | The Settings page |
 | `hw_advisor.py` | Hardware detection, recommendations, budget planner, upgrade preview |
 | `parts_db.py` | Parts, compatibility rules, new and used price estimates |
 | `perf_checks.py` | Free speed-ups: refresh rate, XMP, Game Mode, power plan and more |
@@ -34,7 +35,8 @@ analyzer, shareable rig cards and friend comparisons.
 
 ## Making an .exe
 
-Double-click `build_exe.bat`. The finished app appears in the `dist` folder. Windows may
+Double-click `build_exe.bat`. The finished app appears in the `dist` folder. Keep the project
+folder outside OneDrive (for example `C:\RigCheck`) for the most reliable builds. Windows may
 show a "Windows protected your PC" warning the first time it runs: click More info, then
 Run anyway.
 
@@ -46,11 +48,14 @@ RigCheck can tell you and your friends when a new version is out, using GitHub R
 2. Upload all the files above to it.
 3. In `app_info.py`, set `UPDATE_REPO = "yourname/rigcheck"`.
 4. Rebuild the .exe with `build_exe.bat`.
-5. On GitHub, open Releases > Draft a new release, set the tag to `v1.4.0` (matching
-   `APP_VERSION`), attach `dist\RigCheck.exe`, and publish.
+5. On GitHub, open Releases > Draft a new release, set the tag to `v` plus `APP_VERSION`
+   (for example `v1.5.0`), attach `dist\RigCheck.exe`, and publish.
 
-For each later version: raise `APP_VERSION` (for example to `1.4.0`), rebuild, and publish a
-release tagged `v1.4.0`. Everyone running an older version sees a download banner.
+For each later version: raise `APP_VERSION` (for example to `1.5.1`), rebuild, and publish a
+release tagged `v1.5.1`. RigCheck checks every time it opens and every 4 hours while it's
+running; anyone on an older version sees a download banner.
+
+Don't upload the `dist` or `build` folders or `RigCheck.spec`; they're created by the build.
 
 ## Optional helpers
 

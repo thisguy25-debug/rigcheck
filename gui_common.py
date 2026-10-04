@@ -28,11 +28,16 @@ COLORS = {
     "ok": GREEN, "update": AMBER, "urgent": RED, "info": BLUE, "unknown": MUTED,
     "good": GREEN, "bad": RED, "warn": AMBER,
 }
+PROFILE_LABELS = {"general": "Everyday use", "dev": "Programming",
+                  "gaming": "Gaming", "creative": "Creative work"}
 PRIORITY_LABELS = {"FREE": "Free fix", "HIGH": "Urgent", "MEDIUM": "Recommended", "LOW": "Optional"}
 
 # ---------------------------------------------------------------- type + scaling
 _FONTS = {"display": ("DejaVu Sans", "bold"), "number": "DejaVu Sans", "body": "DejaVu Sans"}
 _SCALE = 1.0
+_TEXT_SCALE = 1.0
+_TEMP_UNIT = "C"
+TEXT_SIZES = {"Normal": 1.0, "Large": 1.15, "Extra large": 1.3}
 
 
 def _pick(root, *names):
@@ -40,9 +45,11 @@ def _pick(root, *names):
     return next((n for n in names if n in available), names[-1])
 
 
-def init_theme(root):
+def init_theme(root, text_size="Normal", temp_unit="C"):
     """Pick fonts and measure screen scaling. Call once, right after creating the window."""
-    global _SCALE
+    global _SCALE, _TEXT_SCALE, _TEMP_UNIT
+    _TEXT_SCALE = TEXT_SIZES.get(text_size, 1.0)
+    _TEMP_UNIT = temp_unit
     available = set(tkfont.families(root))
     _FONTS["display"] = next(
         (c for c in (("Bahnschrift SemiBold", "normal"), ("Barlow SemiBold", "normal"), ("Barlow", "bold"),
@@ -63,21 +70,47 @@ def sentence(s):
 
 
 def px(n):
-    """Scale a pixel size for high-resolution screens."""
-    return int(round(n * _SCALE))
+    """Scale a pixel size for high-resolution screens and the chosen text size."""
+    return int(round(n * _SCALE * _TEXT_SCALE))
+
+
+def _fs(size):
+    return max(6, int(round(size * _TEXT_SCALE)))
+
+
+def set_temp_unit(unit):
+    global _TEMP_UNIT
+    _TEMP_UNIT = unit
+
+
+def fmt_temp(c, decimals=0):
+    """A Celsius reading in the unit chosen in Settings."""
+    if c is None:
+        return "–"
+    if _TEMP_UNIT == "F":
+        return f"{c * 9 / 5 + 32:.{decimals}f}°F"
+    return f"{c:.{decimals}f}°C"
+
+
+def convert_temps(text):
+    """Rewrite any '70°C' inside a sentence to the chosen unit."""
+    if _TEMP_UNIT != "F" or not text:
+        return text
+    import re
+    return re.sub(r"(-?\d+(?:\.\d+)?)°C", lambda m: fmt_temp(float(m.group(1))), text)
 
 
 def base_font(size=10, weight="normal"):
-    return (_FONTS["body"], size, weight)
+    return (_FONTS["body"], _fs(size), weight)
 
 
 def display_font(size=18):
     family, weight = _FONTS["display"]
-    return (family, size, weight)
+    return (family, _fs(size), weight)
 
 
 def number_font(size=11):
-    return (_FONTS["number"], size)
+    return (_FONTS["number"], _fs(size))
 
 
 # ---------------------------------------------------------------- ttk styling
@@ -121,6 +154,12 @@ def setup_styles(root):
     root.option_add("*TCombobox*Listbox.font", base_font())
     style.configure("TCheckbutton", background=BG, foreground=TEXT, indicatorbackground=CARD,
                     indicatorforeground=ACCENT, indicatormargin=px(4))
+    for w in ("TCheckbutton", "TRadiobutton"):
+        style.configure(f"Card.{w}", background=CARD, foreground=TEXT, indicatorbackground=RAISED,
+                        indicatorforeground=ACCENT, indicatormargin=px(4), font=base_font(10))
+        style.map(f"Card.{w}", background=[("active", CARD)], indicatorbackground=[("selected", RAISED)])
+    style.configure("Card.TLabel", background=CARD, foreground=TEXT)
+    style.configure("CardSub.TLabel", background=CARD, foreground=MUTED, font=base_font(9))
     style.map("TCheckbutton", background=[("active", BG)],
               indicatorbackground=[("selected", CARD)])
 
@@ -394,3 +433,25 @@ class BottleneckBar(tk.Canvas):
                 text = f"{label} {self.data[key]:.0f}%"
                 self.create_text(lx + px(16), px(31), text=text, anchor="w", fill=TEXT, font=base_font(9))
                 lx += px(30) + len(text) * px(7)
+
+
+class ScrollFrame(ttk.Frame):
+    """A vertically scrolling area; put widgets in .inner."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+        sb = ttk.Scrollbar(self, command=self.canvas.yview)
+        self.inner = ttk.Frame(self.canvas)
+        self.window = self.canvas.create_window(0, 0, window=self.inner, anchor="nw")
+        self.canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.inner.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
+        self.canvas.bind("<Configure>", lambda e: self.canvas.itemconfigure(self.window, width=e.width))
+        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
+        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+
+    def _wheel(self, e):
+        if self.inner.winfo_height() > self.canvas.winfo_height():
+            self.canvas.yview_scroll(int(-e.delta / 120), "units")
