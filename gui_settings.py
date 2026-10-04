@@ -274,7 +274,8 @@ class SettingsTab(ttk.Frame):
         def done(new, err):
             self.check_btn.state(["!disabled"])
             if err:
-                self.update_msg.configure(text="Couldn't reach GitHub. Try again in a little while.", fg=AMBER)
+                self.update_msg.configure(text=str(err) if isinstance(err, app_info.UpdateCheckError)
+                                          else f"The check failed ({err}).", fg=AMBER)
             elif new:
                 self.update_msg.configure(text=f"Version {new['version']} is available.", fg=GREEN)
                 if not getattr(self.app, "_update_banner", None):

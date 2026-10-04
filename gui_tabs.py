@@ -577,9 +577,9 @@ def _app_update_item():
                           "(README.md explains how)."}
     try:
         new = app_info.check_for_update()
-    except Exception:
+    except Exception as e:
         return {"name": name, "status": "unknown", "link": None,
-                "detail": "Couldn't reach GitHub to check for a newer version."}
+                "detail": f"Couldn't check for a newer version. {e}"}
     if new:
         return {"name": name, "status": "update", "detail": f"Version {new['version']} is available.",
                 "link": {"label": f"Download RigCheck {new['version']}", "url": new["url"]}}
