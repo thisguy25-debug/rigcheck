@@ -357,3 +357,40 @@ class Meter(tk.Canvas):
             if old and old["note"] != it["note"]:
                 self.create_text(x0 + cw - pad, px(16), text=f"was: {old['note'].lower()}", anchor="e",
                                  fill=MUTED, font=base_font(8))
+
+
+class BottleneckBar(tk.Canvas):
+    """A stacked bar: share of time the graphics card, the processor, or neither was the limit."""
+
+    PARTS = (("gpu", "Graphics card", ACCENT), ("cpu", "Processor", AMBER), ("neither", "Neither", "#5a6578"))
+
+    def __init__(self, parent, width=520, height=56, bg=CARD, legend=True):
+        super().__init__(parent, width=px(width), height=px(height if legend else 14), bg=bg,
+                         highlightthickness=0)
+        self.legend, self.data = legend, None
+        self.bind("<Configure>", lambda e: self.draw())
+
+    def set(self, breakdown):
+        self.data = breakdown
+        self.draw()
+
+    def draw(self):
+        self.delete("all")
+        w = self.winfo_width() if self.winfo_width() > 10 else int(self["width"])
+        bar_h = px(14)
+        if not self.data:
+            self.create_rectangle(0, 0, w, bar_h, fill=RAISED, outline="")
+            return
+        x = 0
+        for key, _label, color in self.PARTS:
+            seg = w * self.data[key] / 100
+            if seg >= 1:
+                self.create_rectangle(x, 0, x + seg, bar_h, fill=color, outline="")
+            x += seg
+        if self.legend:
+            lx = 0
+            for key, label, color in self.PARTS:
+                self.create_rectangle(lx, px(26), lx + px(10), px(36), fill=color, outline="")
+                text = f"{label} {self.data[key]:.0f}%"
+                self.create_text(lx + px(16), px(31), text=text, anchor="w", fill=TEXT, font=base_font(9))
+                lx += px(30) + len(text) * px(7)

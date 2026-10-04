@@ -102,7 +102,8 @@ def hardware_lines(hw):
 
     gpus = [short_gpu(g["name"]) + (f", {g['vram_gb']:g} GB" if g["vram_gb"] else "")
             + (" (built into the CPU)" if g["integrated"] else "") for g in hw["gpu"]]
-    return {"os": [hw["os"]], "board": board or ["Not detected"], "cpu": cpu, "ram": ram,
+    system = [hw["os"]] + ([f"Computer name: {hw['pc_name']}"] if hw.get("pc_name") else [])
+    return {"os": system, "board": board or ["Not detected"], "cpu": cpu, "ram": ram,
             "storage": storage or ["No drives detected"], "gpu": gpus or ["No graphics card detected"]}
 
 
@@ -387,15 +388,19 @@ class AdvisorApp(tk.Tk):
 
     # ---------- app updates ----------
     def check_app_update(self):
+        """Look for a newer release on GitHub at startup and every 4 hours while open."""
         if not app_info.UPDATE_REPO:
             return
-        if time.time() - self.settings.get("last_update_check", 0) < 86400:
-            return
+        self.after(4 * 3600 * 1000, self.check_app_update)
+        if getattr(self, "_update_banner", None):
+            return  # already showing one
 
         def done(new, err):
+            if err:
+                return  # offline or GitHub busy: try again next time
             self.settings["last_update_check"] = time.time()
             self.save_settings()
-            if new and not err:
+            if new:
                 self.show_update_banner(new)
         in_thread(self, app_info.check_for_update, done)
 
@@ -403,13 +408,14 @@ class AdvisorApp(tk.Tk):
         import webbrowser
         bar = tk.Frame(self.main, bg=gc.ACCENT_DIM)
         bar.pack(fill="x", before=self.notebook, pady=(px(12), 0))
+        self._update_banner = bar
         tk.Label(bar, text=f"RigCheck {new['version']} is available.", bg=gc.ACCENT_DIM, fg=TEXT,
                  font=base_font(10, "bold"), padx=px(14), pady=px(8)).pack(side="left")
         ttk.Button(bar, text="Download", style="Accent.TButton",
                    command=lambda: webbrowser.open(new["url"])).pack(side="left")
         close = tk.Label(bar, text="Not now", bg=gc.ACCENT_DIM, fg=MUTED, cursor="hand2", padx=px(14))
         close.pack(side="right")
-        close.bind("<Button-1>", lambda _e: bar.destroy())
+        close.bind("<Button-1>", lambda _e: (bar.destroy(), setattr(self, "_update_banner", None)))
 
     def current_profile(self):
         label = self.profile_box.get()
@@ -532,7 +538,8 @@ class AdvisorApp(tk.Tk):
         when = datetime.datetime.now().strftime("%I:%M %p").lstrip("0")
         admin = "" if hwa.SYSTEM != "Windows" or hwa.is_admin() else \
             " Some checks show more detail when RigCheck runs as administrator."
-        self.set_status(f"Scanned at {when}.{admin}", base=True)
+        pc = f", {hw['pc_name']}," if hw.get("pc_name") else ""
+        self.set_status(f"Scanned this PC{pc} at {when}.{admin}", base=True)
         for key, lines in hardware_lines(hw).items():
             self.cards[key].configure(text="\n".join(lines))
         self.refresh_recommendations()
@@ -647,6 +654,12 @@ class AdvisorApp(tk.Tk):
                     "where this part was the limit." if component in ("GPU", "CPU") else ""
         if component == "Storage":
             text += " This assumes you move your games onto the new drive."
+        if component == "GPU":
+            cpu = hwa.parts_db.cpu_score(hwa.parts_db.identify_cpu(self.hw["cpu"]["name"])[1])
+            est = hwa.estimated_cpu_bottleneck(cpu[0] if cpu else None, s1["gpu"])
+            if est is not None:
+                text += (f" Estimated processor bottleneck with this card: {est:.0%} at 1440p."
+                         if est >= 0.05 else " Your processor can keep this card fully fed.")
         self.preview_text.configure(text=text)
         self.preview_bar.pack(fill="x", pady=(px(12), 0), after=self.meter)
         self.preview = (component, part_name)
@@ -829,7 +842,11 @@ class AdvisorApp(tk.Tk):
                 summ = (f"CPU {d['cpu']['single_mbs']:,} / {d['cpu']['multi_mbs']:,} MB/s, "
                         f"memory {d['ram']['copy_gbs']} GB/s")
             else:
-                summ = f"{d.get('label')}: limited by {d.get('bottleneck')} ({d.get('minutes')} min)"
+                pct = d.get("pct_gpu") if d.get("bottleneck") == "GPU" else d.get("pct_cpu") \
+                    if d.get("bottleneck") == "CPU" else None
+                who = {"GPU": "graphics card", "CPU": "processor"}.get(d.get("bottleneck"), "neither part")
+                summ = f"{d.get('label')}: limit was the {who}" + (f" {pct:.0f}% of the time" if pct else "") \
+                    + f" ({d.get('minutes')} min)"
             t.insert("", "end", iid=str(i), text=when, values=(h["kind"].title(), summ),
                      tags=("odd",) if n % 2 else ())
 
@@ -846,6 +863,9 @@ class AdvisorApp(tk.Tk):
             return out
         if kind == "monitor":
             return {"Test": d.get("label"), "Limited by": d.get("bottleneck"),
+                    "Graphics card was the limit %": round(d["pct_gpu"]) if d.get("pct_gpu") is not None else None,
+                    "Processor was the limit %": round(d["pct_cpu"]) if d.get("pct_cpu") is not None else None,
+                    "Graphics power unused %": round(d["lost_gpu"]) if d.get("lost_gpu") is not None else None,
                     "Average CPU %": round(d["avg_cpu"]) if d.get("avg_cpu") else None,
                     "Average busiest core %": round(d["avg_core_max"]) if d.get("avg_core_max") else None,
                     "Average GPU %": round(d["avg_gpu"]) if d.get("avg_gpu") else None,

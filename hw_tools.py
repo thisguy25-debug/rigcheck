@@ -607,6 +607,33 @@ class Monitor:
             self._emit(sum(cores) / len(cores), max(cores), None, None)
 
 
+def classify(gpu, cpu, core_max):
+    """What limited performance in one reading: 'gpu', 'cpu', 'neither', or None when idle."""
+    gpu, cpu, core_max = gpu or 0, cpu or 0, core_max or 0
+    if gpu <= 25 and cpu <= 25:
+        return None
+    if gpu >= 90:
+        return "gpu"
+    if gpu < 80 and (core_max >= 90 or cpu >= 85):
+        return "cpu"
+    return "neither"
+
+
+def breakdown(samples, gpu_key="gpu", cpu_key="cpu", core_key="core_max"):
+    """Share of active time each part was the limit, plus graphics power lost to the CPU (0-100)."""
+    kinds, lost = [], []
+    for s in samples:
+        k = classify(s.get(gpu_key), s.get(cpu_key), s.get(core_key))
+        if k:
+            kinds.append(k)
+            lost.append(100 - (s.get(gpu_key) or 0) if k == "cpu" else 0)
+    n = len(kinds)
+    if not n:
+        return None
+    return {"gpu": 100 * kinds.count("gpu") / n, "cpu": 100 * kinds.count("cpu") / n,
+            "neither": 100 * kinds.count("neither") / n, "lost_gpu": sum(lost) / n, "active": n}
+
+
 def analyze_session(samples):
     """Decide what limited performance during a recorded session."""
     active = [s for s in samples if (s.get("gpu") or 0) > 25 or (s.get("cpu") or 0) > 25]
@@ -623,9 +650,9 @@ def analyze_session(samples):
 
     n = len(active)
     has_gpu = any(s.get("gpu") is not None for s in active)
-    gpu_bound = sum(1 for s in active if (s.get("gpu") or 0) >= 90) / n
-    cpu_bound = sum(1 for s in active if (s.get("gpu") or 0) < 80
-                    and ((s.get("core_max") or 0) >= 90 or (s.get("cpu") or 0) >= 85)) / n
+    b = breakdown(active)
+    gpu_bound, cpu_bound = b["gpu"] / 100, b["cpu"] / 100
+    result["breakdown"] = b
     result.update(avg_cpu=avg("cpu"), avg_core_max=avg("core_max"), avg_gpu=avg("gpu"),
                   avg_ram=avg("ram"), gpu_bound=gpu_bound, cpu_bound=cpu_bound,
                   max_gpu_temp=max((s.get("gpu_temp") or 0) for s in active) or None)
@@ -634,13 +661,14 @@ def analyze_session(samples):
         result["verdict"] = "GPU usage couldn't be read on this system, so only CPU/RAM are shown."
     elif gpu_bound >= 0.6:
         result["bottleneck"] = "GPU"
-        result["verdict"] = (f"GPU-limited: your graphics card was maxed out {gpu_bound:.0%} of the "
-                             "time. A faster graphics card will raise your frame rate the most.")
+        result["verdict"] = (f"Your graphics card was the limit {gpu_bound:.0%} of the time. A faster "
+                             "graphics card will raise your frame rate the most.")
     elif cpu_bound >= 0.4:
         result["bottleneck"] = "CPU"
-        result["verdict"] = (f"CPU-limited: the graphics card was waiting on the processor "
-                             f"{cpu_bound:.0%} of the time. A faster CPU helps more than a new GPU. "
-                             "Lowering CPU-heavy settings (view distance, traffic, crowds) also helps.")
+        result["verdict"] = (f"Your processor was the limit {cpu_bound:.0%} of the time, leaving about "
+                             f"{b['lost_gpu']:.0f}% of your graphics card's power unused. A faster processor "
+                             "helps more than a new graphics card. Lowering CPU-heavy settings (view "
+                             "distance, traffic, crowds) also helps.")
     else:
         result["bottleneck"] = "None"
         result["verdict"] = ("Neither the CPU nor the GPU was maxed out. The game is probably held by "

@@ -292,6 +292,38 @@ INTEGRATED_HINTS = ("intel(r) uhd", "intel(r) hd", "intel hd", "intel uhd", "iri
                     "llvmpipe", "virtualbox", "vmware", "apple m", "apple gpu")
 
 
+def _vram_from_registry():
+    """Windows: true video memory per graphics adapter (the usual WMI value caps at 4 GB)."""
+    out = {}
+    try:
+        import winreg
+        base = r"SYSTEM\ControlSet001\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, base) as k:
+            for i in range(winreg.QueryInfoKey(k)[0]):
+                sub = winreg.EnumKey(k, i)
+                if not sub.isdigit():
+                    continue
+                try:
+                    with winreg.OpenKey(k, sub) as s:
+                        name = winreg.QueryValueEx(s, "DriverDesc")[0]
+                        mem = None
+                        for value in ("HardwareInformation.qwMemorySize", "HardwareInformation.MemorySize"):
+                            try:
+                                mem = winreg.QueryValueEx(s, value)[0]
+                                break
+                            except OSError:
+                                continue
+                        if isinstance(mem, bytes):
+                            mem = int.from_bytes(mem[:8], "little")
+                        if mem:
+                            out[name] = max(out.get(name, 0), int(mem))
+                except OSError:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
 def detect_gpu():
     gpus = []
 
@@ -304,12 +336,13 @@ def detect_gpu():
             gpus.append({"name": parts[0], "vram_gb": round(int(parts[1]) / 1024, 1)})
 
     if SYSTEM == "Windows":
+        reg_vram = _vram_from_registry()
         for v in powershell_json("Get-CimInstance Win32_VideoController | Select Name,AdapterRAM"):
             name = v.get("Name") or "Unknown"
             if any(g["name"] in name or name in g["name"] for g in gpus):
                 continue
-            ram = v.get("AdapterRAM") or 0
-            # AdapterRAM is a 32-bit field and caps at 4 GB, so it's a lower bound
+            # AdapterRAM is a 32-bit field that caps at 4 GB; the registry has the real size
+            ram = reg_vram.get(name) or v.get("AdapterRAM") or 0
             gpus.append({"name": name, "vram_gb": gb(ram) if ram > 0 else None})
     elif SYSTEM == "Linux" and not gpus:
         for line in run("lspci 2>/dev/null").splitlines():
@@ -328,9 +361,20 @@ def detect_gpu():
     return gpus
 
 
+def _os_label():
+    if SYSTEM == "Windows":
+        try:
+            build = sys.getwindowsversion().build
+            return f"Windows {'11' if build >= 22000 else '10'} (build {build}, {platform.machine()})"
+        except Exception:
+            pass
+    return f"{platform.system()} {platform.release()} ({platform.machine()})"
+
+
 def detect_all():
     return {
-        "os": f"{platform.system()} {platform.release()} ({platform.machine()})",
+        "os": _os_label(),
+        "pc_name": platform.node() or None,
         "cpu": detect_cpu(),
         "ram": detect_ram(),
         "storage": detect_storage(),
@@ -672,8 +716,9 @@ def _gpu_recs(hw, p, profile, ctx, add):
         if c["lanes"] == 8 and pcie and pcie <= 3:
             status = "check"
             notes.append("Uses 8 PCIe lanes, so it loses some speed on your PCIe 3.0 board")
-        if cpu and cpu[0] < 60 and c["score"] >= 200:
-            notes.append("Your CPU may hold this card back")
+        est = estimated_cpu_bottleneck(cpu[0] if cpu else None, c["score"])
+        if est is not None and est >= 0.05:
+            notes.append(f"Your processor would hold it back about {est:.0%} at 1440p (estimate)")
 
         # Power supply
         psu_short = False
@@ -753,6 +798,16 @@ def recommend(hw, profile, settings=None):
         add(LOW, "Platform", "Modern Macs have soldered RAM and storage.",
             "Internal upgrades usually aren't possible. External SSDs are the practical option.")
     return sorted(recs, key=lambda r: PRIORITY_ORDER[r["priority"]])
+
+
+def estimated_cpu_bottleneck(cpu_game_score, gpu_score):
+    """Rough share of a graphics card's power a processor can't keep fed at 1440p (0-1).
+
+    Calibrated so a Core i7-12700F / Ryzen 5 7600 class chip drives cards up to about
+    RTX 4080 level fully. A measured result from the bottleneck monitor beats this estimate."""
+    if not cpu_game_score or not gpu_score:
+        return None
+    return max(0.0, 1 - cpu_game_score * 3.6 / gpu_score)
 
 
 PRIORITY_WEIGHT = {HIGH: 3, MED: 2, LOW: 1, FREE: 0}

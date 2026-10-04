@@ -149,6 +149,11 @@ class MonitorTab(ttk.Frame):
         self.state.pack(side="left")
         self.pause_btn = ttk.Button(bar, text="Pause", command=self.toggle_pause)
         self.pause_btn.pack(side="right")
+        self.bn_bar = gc.BottleneckBar(bar, width=160, bg=BG, legend=False)
+        self.bn_bar.pack(side="right", padx=(px(10), px(16)))
+        self.bn_text = ttk.Label(bar, text="", style="Sub.TLabel")
+        self.bn_text.pack(side="right")
+        self.recent = []
         self.paused = False
 
         grid = ttk.Frame(self)
@@ -419,6 +424,23 @@ class MonitorTab(ttk.Frame):
                 self._bar(bar, d["pct"], RED if d["pct"] >= 90 else AMBER if d["pct"] >= 80 else ACCENT)
         self._push("disk", busy)
         self.disk_spark.set([(self.hist["disk"], ACCENT)])
+
+        # Bottleneck over the last 30 seconds
+        cores = s.get("cpu_cores") or []
+        self.recent.append({"gpu": s.get("gpu_load"), "cpu": s.get("cpu_load"),
+                            "core_max": max(cores) if cores else s.get("cpu_load")})
+        del self.recent[:-30]
+        b = hw_tools.breakdown(self.recent)
+        if s.get("gpu_load") is None and not any(r["gpu"] for r in self.recent):
+            self.bn_text.configure(text="Bottleneck: graphics usage isn't available on this PC")
+        elif b and b["active"] >= 5:
+            top = max(("gpu", "cpu", "neither"), key=lambda k: b[k])
+            name = {"gpu": "graphics card", "cpu": "processor", "neither": "neither part"}[top]
+            self.bn_text.configure(text=f"Bottleneck, last 30 s: {name} {b[top]:.0f}%")
+            self.bn_bar.set(b)
+        else:
+            self.bn_text.configure(text="Bottleneck: shows up once a game or heavy task is running")
+            self.bn_bar.set(None)
 
         # Programs
         procs = s.get("procs") or []

@@ -427,7 +427,13 @@ class PerformanceTab(ttk.Frame):
                  f"RAM {s['ram']:.0f}%" if s.get("ram") is not None else "",
                  f"GPU {s['gpu_temp']:.0f}°C" if s.get("gpu_temp") else ""]
         mins = int((time.time() - self.started) // 60)
-        self.live.configure(text=",  ".join(p for p in parts if p) + f"   ({mins} min)")
+        b = hw_tools.breakdown(self.monitor.samples) if self.monitor else None
+        so_far = ""
+        if b and b["active"] >= 5:
+            top = max(("gpu", "cpu", "neither"), key=lambda k: b[k])
+            name = {"gpu": "graphics card", "cpu": "processor", "neither": "neither part"}[top]
+            so_far = f"   Limit so far: {name} {b[top]:.0f}%"
+        self.live.configure(text=",  ".join(p for p in parts if p) + f"   ({mins} min){so_far}")
 
     def stop(self):
         mon, self.monitor = self.monitor, None
@@ -444,6 +450,16 @@ class PerformanceTab(ttk.Frame):
                     {"GPU": "MEDIUM", "CPU": "MEDIUM", "None": "LOW"}[res["bottleneck"]])
             o.write("  ")
         o.write(res["verdict"] + "\n")
+        if res.get("breakdown"):
+            o.write("\nWhat limited your frame rate\n", "label")
+            bar = gc.BottleneckBar(o.text, width=560)
+            bar.set(res["breakdown"])
+            o.text.window_create("end", window=bar)
+            o.write("\n")
+            lost = res["breakdown"]["lost_gpu"]
+            if lost >= 3:
+                o.write(f"Graphics power left unused because of the processor: {lost:.0f}%\n", "muted")
+            o.write("\n", "gap")
         for d in res["details"]:
             o.write(f"• {d}\n", "indent")
         if res.get("avg_cpu") is not None:
@@ -463,7 +479,10 @@ class PerformanceTab(ttk.Frame):
                 "label": label or "Monitor session", "minutes": round((time.time() - self.started) / 60, 1),
                 "bottleneck": res["bottleneck"], "verdict": res["verdict"],
                 "avg_cpu": res.get("avg_cpu"), "avg_core_max": res.get("avg_core_max"),
-                "avg_gpu": res.get("avg_gpu"), "avg_ram": res.get("avg_ram")})
+                "avg_gpu": res.get("avg_gpu"), "avg_ram": res.get("avg_ram"),
+                "pct_gpu": (res.get("breakdown") or {}).get("gpu"),
+                "pct_cpu": (res.get("breakdown") or {}).get("cpu"),
+                "lost_gpu": (res.get("breakdown") or {}).get("lost_gpu")})
             self.app.refresh_history()
         self.app.set_status("Monitor stopped. Results are below and saved to History.")
 
