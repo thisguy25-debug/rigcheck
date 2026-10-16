@@ -44,9 +44,9 @@ STATUS_STYLE = {  # icon, label, color
     "psu": ("!", "Needs a bigger power supply", COLORS["bad"]),
     "new": ("+", "Needs a new motherboard and RAM", COLORS["info"]),
 }
-PAGES = ["Monitor", "Overview", "Speed-ups", "Budget", "Disk space", "Health", "Performance", "Updates", "Games",
-         "Share", "History", "Settings"]
-PAGE_TITLES = {"Monitor": "Live monitor", "Speed-ups": "Free speed-ups", "Budget": "Budget planner"}
+PAGES = ["Monitor", "Overview", "Budget", "Health", "Performance", "Updates", "Share", "History", "Settings"]
+PAGE_TITLES = {"Monitor": "Live monitor", "Budget": "Budget planner"}
+PROFILE = "gaming"  # RigCheck judges hardware for gaming
 GUIDE_FOR = {"RAM": ("RAM", "How to install memory"), "Storage": ("Storage", "How to install an SSD"),
              "GPU": ("GPU", "How to install a graphics card"), "CPU": ("CPU", "How to install a processor"),
              "RAM speed": ("XMP", "Show me how to turn on XMP")}
@@ -261,7 +261,7 @@ class SetupDialog(tk.Toplevel):
 # Sidebar
 # ----------------------------------------------------------------------------
 class NavItem(tk.Frame):
-    SELECTED, HOVER = "#212834", "#1b212b"
+    SELECTED, HOVER = gc.NAV_SELECTED, gc.NAV_HOVER
 
     def __init__(self, parent, text, command):
         super().__init__(parent, bg=SIDEBAR, cursor="hand2")
@@ -302,8 +302,10 @@ class AdvisorApp(tk.Tk):
         super().__init__()
         self.settings = hw_store.load_settings()
         self.started_text_size = self.settings.get("text_size") or "Normal"
+        self.started_theme = self.settings.get("theme") or "dark"
         gc.init_theme(self, self.started_text_size, self.settings.get("temp_unit") or "C")
         self.title("RigCheck")
+        gc.apply_window_icon(self)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
         self.geometry(f"{min(px(1200), sw - 40)}x{min(px(820), sh - 80)}")
         self.minsize(min(px(980), sw - 40), min(px(640), sh - 80))
@@ -322,16 +324,12 @@ class AdvisorApp(tk.Tk):
         self.monitor_tab = gui_monitor.MonitorTab(self.notebook, self)
         self.notebook.add(self.monitor_tab)
         self._build_overview()
-        self.speedups_tab = gui_tabs.SpeedupsTab(self.notebook, self)
-        self.notebook.add(self.speedups_tab)
         self._build_budget()
-        self.disk_tab = gui_tabs.DiskTab(self.notebook, self)
         self.health_tab = gui_tabs.HealthTab(self.notebook, self)
         self.perf_tab = gui_tabs.PerformanceTab(self.notebook, self)
         self.updates_tab = gui_tabs.UpdatesTab(self.notebook, self)
-        self.games_tab = gui_tabs.GamesTab(self.notebook, self)
         self.share_tab = gui_tabs.ShareTab(self.notebook, self)
-        for tab in (self.disk_tab, self.health_tab, self.perf_tab, self.updates_tab, self.games_tab,
+        for tab in (self.health_tab, self.perf_tab, self.updates_tab,
                     self.share_tab):
             self.notebook.add(tab)
         self._build_history()
@@ -368,23 +366,26 @@ class AdvisorApp(tk.Tk):
 
     def restart(self):
         """Close and reopen RigCheck (used after changing text size or resetting settings)."""
-        import subprocess
-        if getattr(sys, "frozen", False):
-            cmd = [sys.executable]
-        else:
-            cmd = [sys.executable, os.path.abspath(sys.argv[0])]
+        import updater
         try:
-            subprocess.Popen(cmd, creationflags=hwa.NO_WINDOW, stdin=subprocess.DEVNULL,
-                             close_fds=True)
+            updater.launch()
         except OSError as e:
             messagebox.showerror("RigCheck", f"RigCheck couldn't restart itself. Please reopen it.\n\n{e}")
         self.on_close()
+
+    def cleanup_after_update(self):
+        """The previous version may still have been closing at startup; try removing it again."""
+        try:
+            import updater
+            updater.cleanup_old()
+        except Exception:
+            pass
 
     def select_page(self, name):
         self.select_tab(PAGES.index(name))
 
     def set_speedup_count(self, n):
-        self.nav[PAGES.index("Speed-ups")].label.configure(text=f"Speed-ups   {n}" if n else "Speed-ups")
+        pass  # the Speed-ups page was removed
 
     def open_guide(self, key):
         gui_tabs.GuideDialog(self, key)
@@ -427,21 +428,69 @@ class AdvisorApp(tk.Tk):
         in_thread(self, app_info.check_for_update, done)
 
     def show_update_banner(self, new):
+        import threading
         import webbrowser
+        import updater
         bar = tk.Frame(self.main, bg=gc.ACCENT_DIM)
         bar.pack(fill="x", before=self.notebook, pady=(px(12), 0))
         self._update_banner = bar
-        tk.Label(bar, text=f"RigCheck {new['version']} is available.", bg=gc.ACCENT_DIM, fg=TEXT,
-                 font=base_font(10, "bold"), padx=px(14), pady=px(8)).pack(side="left")
-        ttk.Button(bar, text="Download", style="Accent.TButton",
-                   command=lambda: webbrowser.open(new["url"])).pack(side="left")
+        msg = tk.Label(bar, text=f"RigCheck {new['version']} is available.", bg=gc.ACCENT_DIM, fg=TEXT,
+                       font=base_font(10, "bold"), padx=px(14), pady=px(8))
+        msg.pack(side="left")
+        btn = ttk.Button(bar, style="Accent.TButton")
+        btn.pack(side="left")
+        if new.get("notes"):
+            notes = tk.Label(bar, text="What's new", bg=gc.ACCENT_DIM, fg=gc.ACCENT, cursor="hand2",
+                             font=base_font(9), padx=px(12))
+            notes.pack(side="left")
+            notes.bind("<Button-1>", lambda _e: messagebox.showinfo(
+                f"What's new in RigCheck {new['version']}", new["notes"]))
         close = tk.Label(bar, text="Not now", bg=gc.ACCENT_DIM, fg=MUTED, cursor="hand2", padx=px(14))
         close.pack(side="right")
         close.bind("<Button-1>", lambda _e: (bar.destroy(), setattr(self, "_update_banner", None)))
 
+        def browser():
+            webbrowser.open(new["url"])
+
+        def failed(reason):
+            msg.configure(text=f"The update didn't finish: {reason}", font=base_font(10))
+            btn.configure(text="Download in browser", command=browser)
+            btn.state(["!disabled"])
+            close.pack(side="right")
+
+        def progress(done, total):
+            pct = f" {done / total:.0%}" if total else f" {done / 1024 ** 2:.0f} MB"
+            self.after(0, lambda: msg.configure(text=f"Downloading RigCheck {new['version']}…{pct}"))
+
+        def install(path):
+            msg.configure(text=f"Installing RigCheck {new['version']} and restarting…")
+            self.update_idletasks()
+            try:
+                updater.install_and_restart(path, self.on_close)
+            except OSError as e:
+                failed(f"RigCheck couldn't replace its own file ({e.strerror or e}). If it's in a "
+                       "protected folder, move it to Documents or Desktop.")
+
+        def start_update():
+            btn.state(["disabled"])
+            close.pack_forget()
+
+            def work():
+                try:
+                    path = updater.download(new, progress)
+                    self.after(0, install, path)
+                except Exception as e:
+                    reason = str(e) if isinstance(e, RuntimeError) else app_info._reason(e)
+                    self.after(0, failed, reason)
+            threading.Thread(target=work, daemon=True).start()
+
+        if updater.can_self_update() and new.get("download_url"):
+            btn.configure(text="Update now", command=start_update)
+        else:
+            btn.configure(text="Download", command=browser)
+
     def current_profile(self):
-        label = self.profile_box.get()
-        return next(k for k, v in PROFILE_LABELS.items() if v == label)
+        return PROFILE
 
     def on_close(self):
         if self.perf_tab.monitor:
@@ -456,9 +505,15 @@ class AdvisorApp(tk.Tk):
         side.pack_propagate(False)
         brand = tk.Frame(side, bg=SIDEBAR)
         brand.pack(fill="x", padx=px(22), pady=(px(26), px(28)))
-        logo = tk.Canvas(brand, width=px(30), height=px(28), bg=SIDEBAR, highlightthickness=0)
-        logo.pack(side="left")
-        draw_logo(logo, ACCENT)
+        logo_file = next((gc.resource(f"rigcheck_{s}.png") for s in (32, 48, 64)
+                          if s >= px(30) and os.path.exists(gc.resource(f"rigcheck_{s}.png"))), None)
+        if logo_file:
+            self._logo_img = tk.PhotoImage(file=logo_file)
+            tk.Label(brand, image=self._logo_img, bg=SIDEBAR).pack(side="left")
+        else:
+            logo = tk.Canvas(brand, width=px(30), height=px(28), bg=SIDEBAR, highlightthickness=0)
+            logo.pack(side="left")
+            draw_logo(logo, ACCENT)
         tk.Label(brand, text="RigCheck", bg=SIDEBAR, fg=TEXT, font=display_font(19)).pack(
             side="left", padx=(px(8), 0))
 
@@ -470,11 +525,6 @@ class AdvisorApp(tk.Tk):
         foot.pack(side="bottom", fill="x", padx=px(22), pady=px(22))
         tk.Label(foot, text=f"Version {app_info.APP_VERSION}", bg=SIDEBAR, fg=MUTED,
                  font=base_font(8)).pack(side="bottom", anchor="w", pady=(px(14), 0))
-        tk.Label(foot, text="I use this PC for", bg=SIDEBAR, fg=MUTED, font=base_font(9)).pack(anchor="w")
-        self.profile_box = ttk.Combobox(foot, state="readonly", values=list(PROFILE_LABELS.values()))
-        self.profile_box.set(PROFILE_LABELS.get(self.settings.get("profile"), "Gaming"))
-        self.profile_box.pack(fill="x", pady=(px(6), 0))
-        self.profile_box.bind("<<ComboboxSelected>>", self.on_profile_change)
 
     def _build_topbar(self):
         top = ttk.Frame(self.main)
@@ -562,11 +612,14 @@ class AdvisorApp(tk.Tk):
             " Some checks show more detail when RigCheck runs as administrator."
         pc = f", {hw['pc_name']}," if hw.get("pc_name") else ""
         self.set_status(f"Scanned this PC{pc} at {when}.{admin}", base=True)
+        if "--updated-from" in sys.argv and not getattr(self, "_told_updated", False):
+            self._told_updated = True
+            self.set_status(f"Updated to RigCheck {app_info.APP_VERSION}. Scanned this PC{pc} at {when}.")
+            self.after(20000, lambda: self.cleanup_after_update())
         for key, lines in hardware_lines(hw).items():
             self.cards[key].configure(text="\n".join(lines))
         self.refresh_recommendations()
-        self.games_tab.refresh()
-        self.speedups_tab.check()
+
         self.share_tab.refresh()
         self.monitor_tab.hw_ready()
         self._record_scan()
@@ -582,7 +635,7 @@ class AdvisorApp(tk.Tk):
         self.settings["profile"] = self.current_profile()
         self.save_settings()
         self.refresh_recommendations()
-        self.games_tab.refresh()
+
 
     # ---------- recommendations ----------
     def refresh_recommendations(self):
@@ -958,4 +1011,17 @@ class AdvisorApp(tk.Tk):
 
 if __name__ == "__main__":
     gc.enable_sharp_text()
-    AdvisorApp().mainloop()
+    gc.set_app_id()
+    try:
+        import updater
+        updater.cleanup_old()
+    except Exception:
+        pass
+    try:
+        import pyi_splash  # only exists inside the .exe, which shows a splash while it unpacks
+    except ImportError:
+        pyi_splash = None
+    app = AdvisorApp()
+    if pyi_splash:
+        app.after(100, pyi_splash.close)  # hide the splash once the window is on screen
+    app.mainloop()

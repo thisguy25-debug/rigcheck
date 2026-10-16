@@ -9,18 +9,46 @@ from tkinter import ttk
 import hw_advisor as hwa
 
 # ---------------------------------------------------------------- palette
-BG = "#1a2029"         # window background (graphite blue)
-SIDEBAR = "#151a22"    # navigation rail
-CARD = "#212834"       # panels
-RAISED = "#2a3240"     # buttons, empty meter segments
-LINE = "#343d4c"       # hairlines and borders
-TEXT = "#e8ebf1"
-MUTED = "#98a2b3"
-ACCENT = "#43b9cc"     # teal: primary actions, links, selection
-ACCENT_HOVER = "#62c9d9"
-ACCENT_DIM = "#23434d"
-ON_COLOR = "#10161d"   # text on colored backgrounds
-GREEN, AMBER, RED, BLUE = "#56c48b", "#e9b44c", "#ef6a64", "#6aa8ff"
+PALETTES = {
+    "dark": dict(BG="#1a2029", SIDEBAR="#151a22", CARD="#212834", RAISED="#2a3240", LINE="#343d4c",
+                 TEXT="#e8ebf1", MUTED="#98a2b3", ACCENT="#43b9cc", ACCENT_HOVER="#62c9d9",
+                 ACCENT_DIM="#23434d", ON_COLOR="#10161d", GREEN="#56c48b", AMBER="#e9b44c",
+                 RED="#ef6a64", BLUE="#6aa8ff", NAV_SELECTED="#212834", NAV_HOVER="#1b212b",
+                 ROW_ALT="#1e2530", SERIES2="#5b7cae", NEUTRAL="#5a6578"),
+    "light": dict(BG="#f2f4f7", SIDEBAR="#e6eaf0", CARD="#ffffff", RAISED="#e2e7ee", LINE="#d3dae3",
+                  TEXT="#1b2230", MUTED="#5d6878", ACCENT="#16879b", ACCENT_HOVER="#1d9db2",
+                  ACCENT_DIM="#d2edf1", ON_COLOR="#ffffff", GREEN="#1f8a52", AMBER="#a86b12",
+                  RED="#c63d37", BLUE="#2f6fdb", NAV_SELECTED="#ffffff", NAV_HOVER="#eef1f5",
+                  ROW_ALT="#f6f8fa", SERIES2="#97afd6", NEUTRAL="#b3bcc8"),
+}
+
+
+def windows_uses_light_mode():
+    if hwa.SYSTEM != "Windows":
+        return False
+    try:
+        import winreg
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER,
+                            r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize") as k:
+            return winreg.QueryValueEx(k, "AppsUseLightTheme")[0] == 1
+    except OSError:
+        return False
+
+
+def _startup_mode():
+    """Read the saved theme before any window exists (colors are fixed for the session)."""
+    try:
+        import hw_store
+        choice = hw_store.load_settings().get("theme", "dark")
+    except Exception:
+        choice = "dark"
+    if choice == "system":
+        return "light" if windows_uses_light_mode() else "dark"
+    return "light" if choice == "light" else "dark"
+
+
+MODE = _startup_mode()
+globals().update(PALETTES[MODE])
 
 COLORS = {
     "FREE": GREEN, "HIGH": RED, "MEDIUM": AMBER, "LOW": BLUE,
@@ -67,6 +95,39 @@ def init_theme(root, text_size="Normal", temp_unit="C"):
 def sentence(s):
     """Capitalize the first letter only, keeping units like GB and MHz intact."""
     return s[:1].upper() + s[1:] if s else s
+
+
+def resource(name):
+    """Path to a file shipped with RigCheck (inside the .exe it's unpacked to a temp folder)."""
+    import os
+    import sys
+    base = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, name)
+
+
+def set_app_id():
+    """Windows: show RigCheck's own icon on the taskbar (not Python's) when run as a script."""
+    if hwa.SYSTEM == "Windows":
+        try:
+            import ctypes
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("RigCheck.App")
+        except Exception:
+            pass
+
+
+def apply_window_icon(window):
+    import os
+    try:
+        ico = resource("rigcheck.ico")
+        if hwa.SYSTEM == "Windows" and os.path.exists(ico):
+            window.iconbitmap(default=ico)  # also used by every dialog
+        else:
+            png = resource("rigcheck_64.png")
+            if os.path.exists(png):
+                window._icon_img = tk.PhotoImage(file=png)
+                window.iconphoto(True, window._icon_img)
+    except tk.TclError:
+        pass
 
 
 def px(n):
@@ -198,8 +259,8 @@ def setup_styles(root):
 
 
 def dark_title_bar(window):
-    """Ask Windows 10/11 to draw this window's title bar in dark mode."""
-    if hwa.SYSTEM != "Windows":
+    """Ask Windows 10/11 to draw this window's title bar in dark mode (dark theme only)."""
+    if hwa.SYSTEM != "Windows" or MODE != "dark":
         return
     try:
         import ctypes
@@ -329,7 +390,7 @@ def make_tree(parent, columns, widths, height=10, stretch_first=True):
         right = c in ("Size", "Price", "%")
         tree.heading(c, text=c, anchor="e" if right else "w")
         tree.column(c, width=px(w), anchor="e" if right else "w", stretch=False)
-    tree.tag_configure("odd", background="#1e2530")
+    tree.tag_configure("odd", background=ROW_ALT)
     sb = ttk.Scrollbar(frame, command=tree.yview)
     tree.configure(yscrollcommand=sb.set)
     sb.pack(side="right", fill="y")
@@ -346,7 +407,17 @@ class Meter(tk.Canvas):
         super().__init__(parent, height=px(112), bg=BG, highlightthickness=0)
         self.items = []
         self.before = None
-        self.bind("<Configure>", lambda e: self.redraw())
+        self._pending = False
+        self.bind("<Configure>", lambda e: self._request())
+
+    def _request(self):
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._run_redraw)
+
+    def _run_redraw(self):
+        self._pending = False
+        self.redraw()
 
     def set(self, items, before=None):
         """items: list of dicts with label, value, ratio (None = unknown), status, note.
@@ -401,7 +472,7 @@ class Meter(tk.Canvas):
 class BottleneckBar(tk.Canvas):
     """A stacked bar: share of time the graphics card, the processor, or neither was the limit."""
 
-    PARTS = (("gpu", "Graphics card", ACCENT), ("cpu", "Processor", AMBER), ("neither", "Neither", "#5a6578"))
+    PARTS = (("gpu", "Graphics card", ACCENT), ("cpu", "Processor", AMBER), ("neither", "Neither", NEUTRAL))
 
     def __init__(self, parent, width=520, height=56, bg=CARD, legend=True):
         super().__init__(parent, width=px(width), height=px(height if legend else 14), bg=bg,

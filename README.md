@@ -1,10 +1,10 @@
 # RigCheck
 
-Shows live CPU, graphics, memory, network and storage readings, finds out what's in your PC, what's holding it back, and which upgrades fit. Includes
-free speed-up checks, upgrade previews, a budget planner, disk cleanup (including FiveM
-and Farming Simulator 25 caches), drive health, temperatures, a bottleneck monitor,
-benchmarks, driver and BIOS checks, game requirements, a Farming Simulator 25 mod
-analyzer, shareable rig cards and friend comparisons.
+Shows live CPU, graphics, memory, network and storage readings (click any of them for
+detailed graphs), finds out what's in your PC, what's holding it back, and which upgrades
+fit. Includes upgrade previews, a budget planner, drive health and temperatures, a
+bottleneck monitor, benchmarks, driver and BIOS checks, shareable rig cards and friend
+comparisons, dark and light modes, and in-app updates.
 
 ## Files (keep them all in one folder)
 
@@ -23,7 +23,9 @@ analyzer, shareable rig cards and friend comparisons.
 | `hw_tools.py` | Disk, health, monitor, benchmark and update tools |
 | `hw_store.py` | Saves your settings and history |
 | `app_info.py` | Version number and update checking |
+| `updater.py` | Downloads and installs new versions from inside the app |
 | `gui_common.py`, `gui_tabs.py` | Parts of the app window |
+| `rigcheck.ico`, `rigcheck*.png` | The app icon, logo images and startup splash |
 | `build_exe.bat` | Builds a double-clickable `RigCheck.exe` |
 
 ## Running it
@@ -49,11 +51,13 @@ RigCheck can tell you and your friends when a new version is out, using GitHub R
 3. In `app_info.py`, set `UPDATE_REPO = "yourname/rigcheck"`.
 4. Rebuild the .exe with `build_exe.bat`.
 5. On GitHub, open Releases > Draft a new release, set the tag to `v` plus `APP_VERSION`
-   (for example `v1.5.0`), attach `dist\RigCheck.exe`, and publish.
+   (for example `v1.7.0`), attach `dist\RigCheck.exe`, and publish.
 
-For each later version: raise `APP_VERSION` (for example to `1.5.1`), rebuild, and publish a
-release tagged `v1.5.1`. RigCheck checks every time it opens and every 4 hours while it's
-running; anyone on an older version sees a download banner.
+For each later version: raise `APP_VERSION` (for example to `1.7.1`), rebuild, and publish a
+release tagged `v1.7.1`. RigCheck checks every time it opens and every 4 hours while it's
+running; anyone on an older version sees a banner with an **Update now** button that downloads
+and installs the new version from inside the app. The release must have the new `RigCheck.exe`
+attached, named exactly `RigCheck.exe`.
 
 Don't upload the `dist` or `build` folders or `RigCheck.spec`; they're created by the build.
 

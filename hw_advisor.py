@@ -49,8 +49,40 @@ def run(cmd, timeout=15):
         return ""
 
 
+_PS_CACHE = {}         # query -> results, filled by one combined PowerShell call per scan
+_PS_COLLECT = None     # while set, queries are only recorded (see detect_all)
+EXTRA_PREFETCH = []    # queries other modules want fetched with the scan (e.g. the live monitor)
+
+
+def _prefetch(queries):
+    """Run many PowerShell queries in ONE PowerShell process. Starting PowerShell takes about
+    half a second each time, so this is several times faster than one process per query."""
+    queries = list(dict.fromkeys(q for q in queries if q not in _PS_CACHE))
+    if not queries:
+        return
+    lines = ["$ErrorActionPreference = 'SilentlyContinue'", "$o = [ordered]@{}"]
+    for i, q in enumerate(queries):
+        lines.append(f"$o['q{i}'] = @({q})")
+    lines.append("$o | ConvertTo-Json -Compress -Depth 5")
+    raw = run(["powershell", "-NoProfile", "-Command", "; ".join(lines)], timeout=60)
+    try:
+        data = json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return  # each query falls back to its own PowerShell call
+    for i, q in enumerate(queries):
+        v = data.get(f"q{i}")
+        if v is None:
+            v = []
+        _PS_CACHE[q] = v if isinstance(v, list) else [v]
+
+
 def powershell_json(query):
     """Run a PowerShell CIM query and return parsed JSON as a list of dicts."""
+    if _PS_COLLECT is not None:
+        _PS_COLLECT.append(query)
+        return []
+    if query in _PS_CACHE:
+        return [r for r in _PS_CACHE[query] if r is not None]
     raw = run(["powershell", "-NoProfile", "-Command",
                f"{query} | ConvertTo-Json -Compress"])
     if not raw:
@@ -371,7 +403,7 @@ def _os_label():
     return f"{platform.system()} {platform.release()} ({platform.machine()})"
 
 
-def detect_all():
+def _detect_everything():
     return {
         "os": _os_label(),
         "pc_name": platform.node() or None,
@@ -381,6 +413,23 @@ def detect_all():
         "gpu": detect_gpu(),
         "board": detect_board(),
     }
+
+
+def detect_all():
+    """Scan this PC. On Windows, every query is gathered first and run in one PowerShell call."""
+    global _PS_COLLECT
+    _PS_CACHE.clear()  # "Scan again" always reads fresh values
+    if SYSTEM == "Windows":
+        _PS_COLLECT = []
+        try:
+            _detect_everything()          # quick dry run that only records the queries
+            queries = _PS_COLLECT + EXTRA_PREFETCH
+        except Exception:
+            queries = []
+        finally:
+            _PS_COLLECT = None
+        _prefetch(queries)
+    return _detect_everything()
 
 
 # ----------------------------------------------------------------------------

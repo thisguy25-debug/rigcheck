@@ -12,7 +12,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-APP_VERSION = "1.5.1"
+APP_VERSION = "1.8.0"
 UPDATE_REPO = "thisguy25-debug/rigcheck"
 
 
@@ -47,10 +47,21 @@ def _open(url, timeout, accept="application/vnd.github+json"):
     raise last
 
 
+def _pick_asset(assets):
+    exes = [a for a in assets or [] if str(a.get("name", "")).lower().endswith(".exe")]
+    return next((a for a in exes if a["name"].lower() == "rigcheck.exe"), exes[0] if exes else None)
+
+
 def _from_api(timeout):
     with _open(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest", timeout) as r:
         data = json.load(r)
-    return data.get("tag_name", ""), data.get("html_url"), (data.get("body") or "").strip()[:600]
+    asset = _pick_asset(data.get("assets"))
+    extra = {}
+    if asset:
+        digest = asset.get("digest") or ""
+        extra = {"download_url": asset.get("browser_download_url"), "size": asset.get("size"),
+                 "sha256": digest.split(":", 1)[1] if digest.startswith("sha256:") else None}
+    return data.get("tag_name", ""), data.get("html_url"), (data.get("body") or "").strip()[:600], extra
 
 
 def _from_website(timeout):
@@ -61,7 +72,10 @@ def _from_website(timeout):
     m = re.search(r"/releases/tag/([^/?#]+)$", final)
     if not m:
         raise UpdateCheckError("There are no published releases on GitHub yet.")
-    return urllib.request.unquote(m.group(1)), final, ""
+    tag = urllib.request.unquote(m.group(1))
+    # GitHub's standard address for a file attached to a release
+    url = f"https://github.com/{UPDATE_REPO}/releases/download/{urllib.request.quote(tag)}/RigCheck.exe"
+    return tag, final, "", {"download_url": url, "size": None, "sha256": None}
 
 
 def _reason(e):
@@ -96,7 +110,7 @@ def check_for_update(timeout=8):
     errors = []
     for source in (_from_api, _from_website):
         try:
-            tag, url, notes = source(timeout)
+            tag, url, notes, extra = source(timeout)
             break
         except Exception as e:  # try the other route, then report the clearest reason
             errors.append(e)
@@ -111,7 +125,7 @@ def check_for_update(timeout=8):
             return 2
         raise UpdateCheckError(_reason(min(errors, key=rank)))
     if _vt(tag) > _vt(APP_VERSION):
-        return {"version": tag.lstrip("vV"), "url": url, "notes": notes}
+        return dict({"version": tag.lstrip("vV"), "url": url, "notes": notes}, **extra)
     return None
 
 

@@ -323,7 +323,7 @@ class HealthTab(ttk.Frame):
 # Performance: bottleneck monitor + benchmark
 # =============================================================================
 class Graph(tk.Canvas):
-    SERIES = [("cpu", "CPU, all cores", BLUE), ("core_max", "Busiest core", "#5b7cae"),
+    SERIES = [("cpu", "CPU, all cores", BLUE), ("core_max", "Busiest core", gc.SERIES2),
               ("gpu", "GPU", GREEN)]
 
     def __init__(self, parent):

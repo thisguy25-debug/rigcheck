@@ -15,7 +15,8 @@ import gui_common as gc
 from gui_common import (px, base_font, display_font, in_thread, ScrollFrame, BG, CARD, TEXT, MUTED,
                         ACCENT, GREEN, AMBER, PROFILE_LABELS, TEXT_SIZES)
 
-START_PAGES = {"Overview": "Overview", "Live monitor": "Monitor", "Free speed-ups": "Speed-ups"}
+START_PAGES = {"Overview": "Overview", "Live monitor": "Monitor"}
+THEMES = {"Dark": "dark", "Light": "light", "Match Windows": "system"}
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 
 
@@ -67,7 +68,6 @@ class SettingsTab(ttk.Frame):
 
         # ---------- General
         c = self._card(body, "General", 0, 0, gap)
-        self.profile = self._combo(c, "I use this PC for", list(PROFILE_LABELS.values()), self._on_profile)
         self.start_page = self._combo(c, "Open RigCheck on", list(START_PAGES), self._on_start_page)
         self.startup = tk.BooleanVar()
         cb = ttk.Checkbutton(c, text="Start RigCheck when Windows starts", style="Card.TCheckbutton",
@@ -82,11 +82,6 @@ class SettingsTab(ttk.Frame):
         for text, val in (("Celsius (°C)", "C"), ("Fahrenheit (°F)", "F")):
             ttk.Radiobutton(row, text=text, value=val, variable=self.temp, style="Card.TRadiobutton",
                             command=self._on_temp).pack(side="left", padx=(0, px(14)))
-        self.text_size = self._combo(c, "Text size", list(TEXT_SIZES), self._on_text_size)
-        self.restart_row = tk.Frame(c, bg=CARD)
-        tk.Label(self.restart_row, text="Applies after RigCheck restarts.", bg=CARD, fg=AMBER,
-                 font=base_font(9)).pack(side="left")
-        ttk.Button(self.restart_row, text="Restart now", command=self.app.restart).pack(side="left", padx=px(10))
 
         # ---------- Your PC
         c = self._card(body, "Your PC", 0, 1, gap,
@@ -132,8 +127,27 @@ class SettingsTab(ttk.Frame):
                 w.state(["disabled"])
             self.update_msg.configure(text="Update checks aren't set up in this copy.")
 
+        # ---------- Appearance
+        c = self._card(body, "Appearance", 2, 0, gap, span=2)
+        row = tk.Frame(c, bg=CARD)
+        row.pack(fill="x")
+        left = tk.Frame(row, bg=CARD)
+        left.pack(side="left", anchor="n", padx=(0, px(60)))
+        self._label(left, "Color mode", top=0)
+        self.theme = tk.StringVar()
+        for text, val in THEMES.items():
+            ttk.Radiobutton(left, text=text, value=val, variable=self.theme, style="Card.TRadiobutton",
+                            command=self._on_theme).pack(anchor="w", pady=px(2))
+        right = tk.Frame(row, bg=CARD)
+        right.pack(side="left", anchor="n")
+        self.text_size = self._combo(right, "Text size", list(TEXT_SIZES), self._on_text_size)
+        self.restart_row = tk.Frame(c, bg=CARD)
+        tk.Label(self.restart_row, text="Applies after RigCheck restarts.", bg=CARD, fg=AMBER,
+                 font=base_font(9)).pack(side="left")
+        ttk.Button(self.restart_row, text="Restart now", command=self.app.restart).pack(side="left", padx=px(10))
+
         # ---------- Your data
-        c = self._card(body, "Your data", 2, 0, gap,
+        c = self._card(body, "Your data", 3, 0, gap,
                        "Settings, history and edited prices are stored on this PC only.", span=2)
         row = tk.Frame(c, bg=CARD)
         row.pack(anchor="w", pady=(px(4), 0))
@@ -190,12 +204,12 @@ class SettingsTab(ttk.Frame):
     def refresh(self):
         s = self.app.settings
         self._loading = True
-        self.profile.set(PROFILE_LABELS.get(s.get("profile"), "Gaming"))
         page = next((k for k, v in START_PAGES.items() if v == s.get("start_page")), "Overview")
         self.start_page.set(page)
         self.startup.set(starts_with_windows())
         self.temp.set(s.get("temp_unit") or "C")
         self.text_size.set(s.get("text_size") or "Normal")
+        self.theme.set(s.get("theme") or "dark")
         self.watts.set(s.get("psu_watts") or "")
         self.pins.set("" if s.get("psu_8pin") is None else str(s["psu_8pin"]))
         self.pin16.set(bool(s.get("psu_16pin")))
@@ -209,11 +223,6 @@ class SettingsTab(ttk.Frame):
         self.app.settings[key] = value
         self.app.save_settings()
         self.app.set_status(status)
-
-    def _on_profile(self):
-        self.app.profile_box.set(self.profile.get())
-        self.app.on_profile_change()
-        self.app.set_status("Settings saved. Recommendations updated.")
 
     def _on_start_page(self):
         self._save("start_page", START_PAGES[self.start_page.get()])
@@ -232,13 +241,23 @@ class SettingsTab(ttk.Frame):
         self._save("temp_unit", self.temp.get(), "Temperatures will show in " +
                    ("Fahrenheit." if self.temp.get() == "F" else "Celsius."))
 
-    def _on_text_size(self):
-        changed = self.text_size.get() != (self.app.started_text_size or "Normal")
-        self._save("text_size", self.text_size.get())
-        if changed:
-            self.restart_row.pack(anchor="w", pady=(px(8), 0))
+    def _needs_restart(self):
+        return ((self.text_size.get() != (self.app.started_text_size or "Normal")) or
+                (self.theme.get() != self.app.started_theme))
+
+    def _show_restart(self):
+        if self._needs_restart():
+            self.restart_row.pack(anchor="w", pady=(px(10), 0))
         else:
             self.restart_row.pack_forget()
+
+    def _on_text_size(self):
+        self._save("text_size", self.text_size.get())
+        self._show_restart()
+
+    def _on_theme(self):
+        self._save("theme", self.theme.get())
+        self._show_restart()
 
     def _on_pc(self):
         if self._loading:

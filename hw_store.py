@@ -57,6 +57,7 @@ DEFAULT_SETTINGS = {
     "start_page": "Overview",
     "temp_unit": "C",
     "text_size": "Normal",
+    "theme": "dark",            # dark, light or system
     "auto_update_check": True,
 }
 

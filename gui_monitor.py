@@ -28,39 +28,52 @@ class Ring(tk.Canvas):
     def __init__(self, parent, size=108, label="Load"):
         super().__init__(parent, width=px(size), height=px(size), bg=CARD, highlightthickness=0)
         self.size, self.label, self.value = px(size), label, None
-        self.draw()
-
-    def set(self, value):
-        self.value = value
-        self.draw()
-
-    def draw(self):
-        self.delete("all")
+        self._filled = -1
         s, w = self.size, px(9)
         box = (w, w, s - w, s - w)
         seg = self.SWEEP / self.SEGMENTS
-        filled = 0 if self.value is None else round(min(max(self.value, 0), 100) / 100 * self.SEGMENTS)
-        for i in range(self.SEGMENTS):
-            start = self.START - i * seg
-            self.create_arc(*box, start=start - seg + 1.2, extent=seg - 2.4, style="arc", width=w,
-                            outline=ACCENT if i < filled else RAISED)
-        text = "–" if self.value is None else f"{self.value:.0f}%"
+        # draw every segment once; updates only change their colors
+        self._segs = [self.create_arc(*box, start=self.START - i * seg - seg + 1.2, extent=seg - 2.4,
+                                      style="arc", width=w, outline=RAISED) for i in range(self.SEGMENTS)]
         big = 18 if s > px(90) else 15
-        self.create_text(s / 2, s / 2 - px(4), text=text, fill=TEXT, font=number_font(big))
+        self._text = self.create_text(s / 2, s / 2 - px(4), text="–", fill=TEXT, font=number_font(big))
         self.create_text(s / 2, s / 2 + px(17), text=self.label, fill=MUTED, font=base_font(8))
+
+    def set(self, value):
+        self.value = value
+        filled = 0 if value is None else round(min(max(value, 0), 100) / 100 * self.SEGMENTS)
+        if filled != self._filled:
+            lo, hi = sorted((max(self._filled, 0), filled))
+            for i in range(lo, hi) if self._filled >= 0 else range(self.SEGMENTS):
+                self.itemconfigure(self._segs[i], outline=ACCENT if i < filled else RAISED)
+            self._filled = filled
+        self.itemconfigure(self._text, text="–" if value is None else f"{value:.0f}%")
 
 
 class Spark(tk.Canvas):
     """A small history graph. series: list of (values, color)."""
 
-    def __init__(self, parent, height=44, fixed_max=100):
+    def __init__(self, parent, height=44, fixed_max=100, capacity=HISTORY):
         super().__init__(parent, height=px(height), bg=CARD, highlightthickness=0)
-        self.fixed_max, self.series = fixed_max, []
-        self.bind("<Configure>", lambda e: self.draw())
+        self.fixed_max, self.series, self.capacity = fixed_max, [], capacity
+        self._pending = False
+        self.bind("<Configure>", lambda e: self.request())
+        self.bind("<Map>", lambda e: self.request())
 
     def set(self, series):
         self.series = series
-        self.draw()
+        self.request()
+
+    def request(self):
+        """Coalesce redraws: many changes in a row become one redraw."""
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._redraw)
+
+    def _redraw(self):
+        self._pending = False
+        if self.winfo_ismapped():
+            self.draw()
 
     def draw(self):
         self.delete("all")
@@ -71,12 +84,13 @@ class Spark(tk.Canvas):
         self.create_line(0, h - 1, w, h - 1, fill=LINE)
         self.create_line(0, top, w, top, fill=LINE, dash=(2, 4))
         peak = self.fixed_max or max([max(v) for v, _ in self.series if v] + [1])
-        step = w / (HISTORY - 1)
+        step = w / (self.capacity - 1)
         for values, color in self.series:
             if len(values) < 2:
                 continue
             pts = []
-            offset = HISTORY - len(values)
+            values = values[-self.capacity:]
+            offset = self.capacity - len(values)
             for i, v in enumerate(values):
                 pts += [(offset + i) * step, h - 1 - (h - 1 - top) * min((v or 0) / peak, 1)]
             self.create_line(*pts, fill=color, width=px(2))
@@ -88,11 +102,23 @@ class CoreBars(tk.Canvas):
     def __init__(self, parent):
         super().__init__(parent, height=px(22), bg=CARD, highlightthickness=0)
         self.values = []
-        self.bind("<Configure>", lambda e: self.draw())
+        self._pending = False
+        self.bind("<Configure>", lambda e: self.request())
+        self.bind("<Map>", lambda e: self.request())
 
     def set(self, values):
         self.values = values or []
-        self.draw()
+        self.request()
+
+    def request(self):
+        if not self._pending:
+            self._pending = True
+            self.after_idle(self._redraw)
+
+    def _redraw(self):
+        self._pending = False
+        if self.winfo_ismapped():
+            self.draw()
 
     def draw(self):
         self.delete("all")
@@ -119,6 +145,23 @@ class Card(tk.Frame):
         tk.Label(head, text=title, bg=CARD, fg=TEXT, font=display_font(12)).pack(side="left")
         self.subtitle = tk.Label(head, text="", bg=CARD, fg=MUTED, font=base_font(9))
         self.subtitle.pack(side="right")
+
+    def clickable(self, command):
+        """Make the whole card open its details view."""
+        hint = tk.Label(self.subtitle.master, text="Details ›", bg=CARD, fg=ACCENT, font=base_font(9))
+        hint.pack(side="right", padx=(px(10), 0), before=self.subtitle)
+
+        def bind_all(w):
+            if getattr(w, "_no_click", False):
+                return  # e.g. the sensor setup row has its own button
+            w.bind("<Button-1>", lambda _e: command(), add="+")
+            try:
+                w.configure(cursor="hand2")
+            except tk.TclError:
+                pass
+            for child in w.winfo_children():
+                bind_all(child)
+        bind_all(self)
 
     def stats(self, parent, rows):
         """rows: list of labels. Returns {label: value_label}."""
@@ -156,7 +199,11 @@ class MonitorTab(ttk.Frame):
         self.recent = []
         self.paused = False
 
-        grid = ttk.Frame(self)
+        self.long = {}            # 5-minute history for the details views
+        self.detail_kind = None
+        self.last = {}
+        self.detail = ttk.Frame(self)
+        grid = self.overview = ttk.Frame(self)
         grid.pack(fill="both", expand=True)
         for c in range(6):
             grid.columnconfigure(c, weight=1, uniform="m")
@@ -177,8 +224,15 @@ class MonitorTab(ttk.Frame):
         self.cores.pack(fill="x")
         self.cpu_spark = Spark(self.cpu, height=30)
         self.cpu_spark.pack(fill="x", pady=(px(6), 0))
-        self.cpu_note = tk.Label(self.cpu, text="", bg=CARD, fg=MUTED, font=base_font(8), anchor="w",
-                                 justify="left", wraplength=px(420))
+        self.cpu_note = tk.Frame(self.cpu, bg=CARD)
+        self.cpu_note._no_click = True
+        self.cpu_note_text = tk.Label(self.cpu_note, text="", bg=CARD, fg=MUTED, font=base_font(8), anchor="w",
+                                      justify="left", wraplength=px(300))
+        self.cpu_note_text.pack(side="left", fill="x", expand=True)
+        self.sensor_btn = ttk.Button(self.cpu_note, text="Turn on sensors", command=self.setup_sensors)
+        self.sensor_btn.pack(side="right", padx=(px(8), 0))
+        self._sensor_busy = False
+        self._no_feed = 0
 
         # ----- GPU
         self.gpu = Card(grid, "Graphics")
@@ -250,7 +304,12 @@ class MonitorTab(ttk.Frame):
         frame.pack(fill="both", expand=True, pady=(px(8), 0))
         self.proc_note = progs.subtitle
 
+        for card, kind in ((self.cpu, "cpu"), (self.gpu, "gpu"), (self.ram, "ram"), (self.net, "net"),
+                           (self.disk, "disk")):
+            card.clickable(lambda k=kind: self.show_detail(k))
         app.notebook.bind("<<NotebookTabChanged>>", self._on_tab, add="+")
+        app.bind("<Unmap>", self._on_minimize, add="+")
+        app.bind("<Map>", self._on_restore, add="+")
 
     def _speed(self, parent, label, color):
         f = tk.Frame(parent, bg=CARD)
@@ -272,6 +331,65 @@ class MonitorTab(ttk.Frame):
             self.start()
         else:
             self.stop()
+
+    def _on_minimize(self, e):
+        """Stop reading sensors while RigCheck is minimized, so it doesn't compete with games."""
+        if e.widget is self.app and self.monitor:
+            self.stop()
+            self._minimized = True
+            self.state.configure(text="Paused while RigCheck is minimized.")
+
+    def _on_restore(self, e):
+        if e.widget is self.app and getattr(self, "_minimized", False):
+            self._minimized = False
+            self._on_tab()
+
+    # ---------- processor sensors (LibreHardwareMonitor) ----------
+    def _show_sensor_offer(self):
+        import sensors
+        if sensors.is_installed():
+            self.cpu_note_text.configure(text="The sensor helper is installed but not running.")
+            self.sensor_btn.configure(text="Start sensors")
+        else:
+            self.cpu_note_text.configure(text="Temperature, power and fan need a free sensor helper "
+                                              "(LibreHardwareMonitor). Setup takes about a minute.")
+            self.sensor_btn.configure(text="Turn on sensors")
+        self.sensor_btn.state(["!disabled"])
+        self.cpu_note.pack(fill="x", pady=(px(4), 0))
+
+    def setup_sensors(self):
+        import sensors
+        self._sensor_busy = True
+        self.sensor_btn.state(["disabled"])
+
+        def say(msg):
+            self.after(0, lambda: self.cpu_note_text.configure(text=msg))
+
+        def work():
+            if not sensors.is_installed():
+                sensors.download(say)
+            else:
+                sensors.write_config()
+            say("Click Yes on the Windows permission prompt…")
+            return sensors.register_and_start()
+
+        def done(ok, err):
+            self._sensor_busy = False
+            self.sensor_btn.state(["!disabled"])
+            if err:
+                reason = str(err) if isinstance(err, RuntimeError) else "couldn't reach GitHub to download it"
+                self.cpu_note_text.configure(text=f"Setup didn't finish: {reason}. Try again in a minute.")
+            elif not ok:
+                self.cpu_note_text.configure(text="Windows permission was declined, so the sensors can't "
+                                                  "start. Click to try again.")
+                self.sensor_btn.configure(text="Try again")
+            else:
+                self.cpu_note_text.configure(text="Starting. If LibreHardwareMonitor asks to install "
+                                                  "PawnIO, click OK. Readings appear here in a few seconds, "
+                                                  "and from now on it starts with Windows.")
+                self.sensor_btn.pack_forget()
+                self.after(60000, lambda: self.sensor_btn.pack(side="right", padx=(px(8), 0)))
+        in_thread(self, work, done)
 
     def hw_ready(self):
         if self._visible() and not self.paused:
@@ -352,6 +470,10 @@ class MonitorTab(ttk.Frame):
 
     @staticmethod
     def _bar(canvas, pct, color):
+        key = (round(pct or 0, 1), color, canvas.winfo_width())
+        if getattr(canvas, "_last", None) == key:
+            return
+        canvas._last = key
         canvas.delete("all")
         w, h = canvas.winfo_width(), canvas.winfo_height()
         canvas.create_rectangle(0, 0, w, h, fill=RAISED, outline="")
@@ -366,6 +488,10 @@ class MonitorTab(ttk.Frame):
     def _update(self, s):
         if not self.monitor:
             return
+        self.last = s
+        self._push_long(s)
+        if self.detail_kind:
+            self._update_detail(s)
         # CPU
         self.cpu_ring.set(s.get("cpu_load"))
         t = s.get("cpu_temp")
@@ -378,11 +504,10 @@ class MonitorTab(ttk.Frame):
         self.cores.set(s.get("cpu_cores"))
         self._push("cpu", s.get("cpu_load"))
         self.cpu_spark.set([(self.hist["cpu"], ACCENT)])
-        if t is None and hw_tools.WINDOWS and not self.cpu_note.winfo_ismapped():
-            self.cpu_note.configure(text="Temperature, power and fan speed appear while LibreHardwareMonitor "
-                                         "is running (free; see the Health page).")
-            self.cpu_note.pack(fill="x")
-        elif t is not None and self.cpu_note.winfo_ismapped():
+        self._no_feed = 0 if t is not None else self._no_feed + 1
+        if t is None and hw_tools.WINDOWS and self._no_feed >= 6 and not self.cpu_note.winfo_ismapped():
+            self._show_sensor_offer()
+        elif t is not None and self.cpu_note.winfo_ismapped() and not self._sensor_busy:
             self.cpu_note.pack_forget()
 
         # GPU
@@ -453,11 +578,244 @@ class MonitorTab(ttk.Frame):
         # Programs
         procs = s.get("procs") or []
         t = self.proc_tree
-        if procs:
-            t.delete(*t.get_children())
+        if procs and procs is not getattr(self, "_shown_procs", None):
+            self._shown_procs = procs
+            rows = t.get_children()
             for n, (name, cpu, mem) in enumerate(procs):
-                t.insert("", "end", text=name, values=(f"{cpu:.1f}%", hw_tools.human(mem)),
-                         tags=("odd",) if n % 2 else ())
-            self.proc_note.configure(text="Updates every 2 seconds")
+                values = (f"{cpu:.1f}%", hw_tools.human(mem))
+                if n < len(rows):
+                    t.item(rows[n], text=name, values=values)
+                else:
+                    t.insert("", "end", text=name, values=values, tags=("odd",) if n % 2 else ())
+            for extra in rows[len(procs):]:
+                t.delete(extra)
+            self.proc_note.configure(text="Updates every 3 seconds")
         elif not live.psutil:
             self.proc_note.configure(text="Install psutil to see programs (the .exe includes it)")
+
+
+# =============================================================================
+# Details views (click a card on the Live monitor)
+# =============================================================================
+LONG = 300  # samples kept for the details graphs
+
+
+class Chart(tk.Frame):
+    """A larger history graph with the current value and low / average / high."""
+
+    def __init__(self, parent, title, fmt, fixed_max=None, color=None):
+        super().__init__(parent, bg=CARD, padx=px(16), pady=px(12))
+        self.fmt = fmt
+        head = tk.Frame(self, bg=CARD)
+        head.pack(fill="x")
+        tk.Label(head, text=title, bg=CARD, fg=MUTED, font=base_font(9)).pack(side="left")
+        self.value = tk.Label(self, text="–", bg=CARD, fg=TEXT, font=number_font(20), anchor="w")
+        self.value.pack(anchor="w")
+        self.stats = tk.Label(self, text="", bg=CARD, fg=MUTED, font=base_font(8), anchor="w")
+        self.stats.pack(anchor="w")
+        self.spark = Spark(self, height=96, fixed_max=fixed_max, capacity=LONG)
+        self.spark.pack(fill="x", pady=(px(6), 0))
+        self.caption = tk.Label(self, text="", bg=CARD, fg=MUTED, font=base_font(8))
+        self.caption.pack(anchor="w")
+        self.color = color or ACCENT
+
+    def set(self, values, empty_note="No readings yet"):
+        vals = [v for v in values if v is not None]
+        if not vals:
+            self.value.configure(text="–")
+            self.stats.configure(text="")
+            self.caption.configure(text=empty_note)
+            self.spark.set([])
+            return
+        self.value.configure(text=self.fmt(vals[-1]))
+        self.stats.configure(text=f"Low {self.fmt(min(vals))}   Avg {self.fmt(sum(vals) / len(vals))}   "
+                                  f"High {self.fmt(max(vals))}")
+        self.spark.set([([v or 0 for v in values], self.color)])
+
+
+def _ghz(mhz):
+    return f"{mhz / 1000:.2f} GHz"
+
+
+DETAILS = {
+    # kind: (title, [(chart title, history key, formatter, fixed max, note when empty)])
+    "cpu": ("Processor", [
+        ("Load", "cpu_load", lambda v: f"{v:.0f}%", 100, ""),
+        ("Temperature", "cpu_temp", lambda v: gc.fmt_temp(v), 100,
+         "Needs LibreHardwareMonitor running (free; see the Health page)"),
+        ("Clock speed", "cpu_clock", _ghz, None, ""),
+        ("Power", "cpu_power", lambda v: f"{v:.0f} W", None,
+         "Needs LibreHardwareMonitor running (free; see the Health page)")]),
+    "gpu": ("Graphics", [
+        ("Load", "gpu_load", lambda v: f"{v:.0f}%", 100, ""),
+        ("Temperature", "gpu_temp", lambda v: gc.fmt_temp(v), 100, "Not reported by this graphics card"),
+        ("Clock speed", "gpu_clock", lambda v: f"{v:,.0f} MHz", None, "Not reported by this graphics card"),
+        ("Video memory in use", "vram_gb", lambda v: f"{v:.1f} GB", None, "")]),
+    "ram": ("Memory", [
+        ("In use", "ram_load", lambda v: f"{v:.0f}%", 100, ""),
+        ("Used", "ram_gb", lambda v: f"{v:.1f} GB", None, "")]),
+    "net": ("Network", [
+        ("Download", "down_mbps", lambda v: f"{v:.1f} Mbps", None, ""),
+        ("Upload", "up_mbps", lambda v: f"{v:.1f} Mbps", None, ""),
+        ("Latency", "ping", lambda v: f"{v:.0f} ms", None, "Checked every 6 seconds")]),
+    "disk": ("Storage", [
+        ("Reading", "read_mbs", lambda v: f"{v:.1f} MB/s", None, ""),
+        ("Writing", "write_mbs", lambda v: f"{v:.1f} MB/s", None, ""),
+        ("Busy", "disk_active", lambda v: f"{v:.0f}%", 100, "")]),
+}
+
+
+def _mt_push(self, s):
+    vram = s.get("vram_used")
+    values = {
+        "cpu_load": s.get("cpu_load"), "cpu_temp": s.get("cpu_temp"), "cpu_clock": s.get("cpu_clock"),
+        "cpu_power": s.get("cpu_power"), "gpu_load": s.get("gpu_load"), "gpu_temp": s.get("gpu_temp"),
+        "gpu_clock": s.get("gpu_clock"), "vram_gb": vram / 1024 if vram else None,
+        "ram_load": s.get("ram_load"), "ram_gb": s.get("ram_used"),
+        "down_mbps": s["net_down"] * 8 / 1e6 if s.get("net_down") is not None else None,
+        "up_mbps": s["net_up"] * 8 / 1e6 if s.get("net_up") is not None else None,
+        "ping": s.get("ping"),
+        "read_mbs": s["disk_read"] / 1024 ** 2 if s.get("disk_read") is not None else None,
+        "write_mbs": s["disk_write"] / 1024 ** 2 if s.get("disk_write") is not None else None,
+        "disk_active": s.get("disk_active")}
+    for k, v in values.items():
+        h = self.long.setdefault(k, [])
+        h.append(v)
+        del h[:-LONG]
+
+
+def _mt_specs(self, kind):
+    """(label, value) rows for the details view's specs panel."""
+    hw, i, s = self.app.hw or {}, self.info or {}, self.last or {}
+    import hw_advisor as hwa
+    if kind == "cpu":
+        c = hw.get("cpu", {})
+        platform = hwa.parts_db.identify_cpu(c.get("name"))[0]
+        label = hwa.parts_db.PLATFORMS.get(platform, {}).get("label") if platform else None
+        model = re.sub(r"\s+", " ", re.sub(r"\(R\)|\(TM\)|\d+th Gen|CPU|Processor|@.*|\d+-Core", "",
+                                          c.get("name") or "")).strip()
+        rows = [("Model", model or c.get("name")), ("Cores", c.get("cores")), ("Threads", c.get("threads")),
+                ("Base clock", _ghz(i["base_mhz"]) if i.get("base_mhz") else None),
+                ("Current clock", _ghz(s["cpu_clock"]) if s.get("cpu_clock") else None),
+                ("Socket", label)]
+    elif kind == "gpu":
+        g = next((g for g in hw.get("gpu", []) if not g["integrated"]), (hw.get("gpu") or [{}])[0])
+        total = s.get("vram_total")
+        rows = [("Model", g.get("name")),
+                ("Video memory", f"{total / 1024:.0f} GB" if total else
+                 (f"{g['vram_gb']:g} GB" if g.get("vram_gb") else None)),
+                ("Current clock", f"{s['gpu_clock']:,.0f} MHz" if s.get("gpu_clock") else None),
+                ("Power", f"{s['gpu_power']:.0f} W" if s.get("gpu_power") else None),
+                ("Fan", (f"{s['gpu_fan']:.0f}%" if s.get("gpu_fan") else "Stopped (quiet mode)")
+                 if s.get("gpu_fan") is not None else None)]
+    elif kind == "ram":
+        r = hw.get("ram", {})
+        mods = r.get("modules") or []
+        rows = [("Capacity", f"{r['total_gb']:g} GB" if r.get("total_gb") else None),
+                ("Type", " ".join(x for x in (r.get("type"), r.get("form")) if x) or None),
+                ("Running at", f"{r['configured_mhz']} MHz" if r.get("configured_mhz") else None),
+                ("Rated for", f"{r['rated_mhz']} MHz" if r.get("rated_mhz") and r.get("rated_mhz") != r.get(
+                    "configured_mhz") else None),
+                ("Sticks", (" + ".join(f"{m:g} GB" for m in mods) +
+                            (f" in {r['slots_total']} slots" if r.get("slots_total") else "")) if mods else None)]
+    elif kind == "net":
+        rows = [("Connection", i.get("adapter")), ("Link speed", i.get("link")), ("IP address", i.get("ip")),
+                ("Latency", f"{s['ping']} ms" if s.get("ping") else None)]
+    else:
+        rows = []
+        for d in hw.get("storage", {}).get("drives", []):
+            size = d.get("size_gb") or 0
+            cap = f"{size / 1024:.1f} TB" if size >= 1000 else f"{size:.0f} GB"
+            rows.append((d.get("name") or "Drive", f"{cap} {d.get('bus') or ''} {d.get('type') or ''}".strip()))
+        for d in s.get("drives") or []:
+            rows.append((f"{d['drive']} space", f"{hw_tools.human(d['used'])} used of "
+                                                  f"{hw_tools.human(d['total'])} ({d['pct']:.0f}%)"))
+    return [(k, v) for k, v in rows if v not in (None, "")]
+
+
+def _mt_show_detail(self, kind):
+    self.detail_kind = kind
+    for w in self.detail.winfo_children():
+        w.destroy()
+    title, charts = DETAILS[kind]
+    head = tk.Frame(self.detail, bg=BG)
+    head.pack(fill="x", pady=(0, px(10)))
+    back = tk.Label(head, text="‹ Back to all", bg=BG, fg=ACCENT, cursor="hand2", font=base_font(10))
+    back.pack(side="left")
+    back.bind("<Button-1>", lambda _e: self.hide_detail())
+    tk.Label(head, text=f"{title} details", bg=BG, fg=TEXT, font=display_font(14)).pack(side="left",
+                                                                                     padx=px(16))
+    body = tk.Frame(self.detail, bg=BG)
+    body.pack(fill="both", expand=True)
+    body.columnconfigure(0, weight=1, minsize=px(260))
+    body.columnconfigure(1, weight=2)
+    body.columnconfigure(2, weight=2)
+
+    specs = tk.Frame(body, bg=CARD, padx=px(16), pady=px(12))
+    specs.grid(row=0, column=0, rowspan=2, sticky="nsew", padx=(0, px(12)))
+    tk.Label(specs, text="Specs", bg=CARD, fg=TEXT, font=display_font(12)).pack(anchor="w", pady=(0, px(6)))
+    self.spec_box = tk.Frame(specs, bg=CARD)
+    self.spec_box.pack(fill="x")
+    if kind == "cpu":
+        tk.Label(specs, text="Each core", bg=CARD, fg=MUTED, font=base_font(9)).pack(anchor="w", pady=(px(14), px(4)))
+        self.detail_cores = CoreBars(specs)
+        self.detail_cores.configure(height=px(70))
+        self.detail_cores.pack(fill="x")
+    else:
+        self.detail_cores = None
+
+    self.detail_charts = []
+    for n, (ctitle, key, fmt, fmax, note) in enumerate(charts):
+        ch = Chart(body, ctitle, fmt, fixed_max=fmax, color=BLUE if key == "up_mbps" else ACCENT)
+        ch.grid(row=n // 2, column=1 + n % 2, sticky="nsew", padx=(0, px(12) if n % 2 == 0 else 0),
+                pady=(0, px(12)))
+        self.detail_charts.append((ch, key, note))
+    minutes = LONG * int(self.app.settings.get("monitor_interval") or 1) / 60
+    for ch, _k, _n in self.detail_charts:
+        ch.caption.configure(text=f"Last {minutes:g} minutes")
+    self.overview.pack_forget()
+    self.detail.pack(fill="both", expand=True)
+    if self.last:
+        self._update_detail(self.last)
+
+
+def _mt_hide_detail(self):
+    self.detail_kind = None
+    self.detail.pack_forget()
+    self.overview.pack(fill="both", expand=True)
+
+
+def _mt_update_detail(self, s):
+    rows = self._specs(self.detail_kind)
+    box = self.spec_box
+    existing = getattr(self, "_spec_labels", {})
+    if [r[0] for r in rows] != list(existing) or not box.winfo_children():
+        for w in box.winfo_children():
+            w.destroy()
+        existing = {}
+        for r, (label, value) in enumerate(rows):
+            tk.Label(box, text=label, bg=CARD, fg=MUTED, font=base_font(9), anchor="w").grid(
+                row=r * 2, column=0, sticky="w", pady=(px(4), 0))
+            v = tk.Label(box, text=str(value), bg=CARD, fg=TEXT, font=base_font(10), anchor="w",
+                         justify="left", wraplength=px(240))
+            v.grid(row=r * 2 + 1, column=0, sticky="w")
+            existing[label] = v
+        self._spec_labels = existing
+    else:
+        for label, value in rows:
+            existing[label].configure(text=str(value))
+    if self.detail_cores is not None:
+        self.detail_cores.set(s.get("cpu_cores"))
+    minutes = LONG * int(self.app.settings.get("monitor_interval") or 1) / 60
+    for ch, key, note in self.detail_charts:
+        values = self.long.get(key, [])
+        ch.set(values, empty_note=note or "No readings yet")
+        if any(v is not None for v in values):
+            ch.caption.configure(text=f"Last {minutes:g} minutes")
+
+
+MonitorTab._push_long = _mt_push
+MonitorTab._specs = _mt_specs
+MonitorTab.show_detail = _mt_show_detail
+MonitorTab.hide_detail = _mt_hide_detail
+MonitorTab._update_detail = _mt_update_detail

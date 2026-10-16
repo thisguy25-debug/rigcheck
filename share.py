@@ -129,11 +129,16 @@ def make_card(snap, path, profile_label):
     f = _fonts()
     M = 56
 
-    # Brand mark: the four-bar meter from the app
-    for i, h in enumerate((12, 19, 26, 34)):
-        x = M + i * 10
-        d.rectangle([x, 72 - h, x + 7, 72], fill=ACCENT)
-    d.text((M + 50, 40), "RigCheck", font=f["brand"], fill=TEXT)
+    # Brand mark: the app icon, falling back to the old bars if the file is missing
+    try:
+        import gui_common
+        mark = Image.open(gui_common.resource("rigcheck.png")).convert("RGBA").resize((44, 44), Image.LANCZOS)
+        img.paste(mark, (M, 34), mark)
+    except Exception:
+        for i, h in enumerate((12, 19, 26, 34)):
+            x = M + i * 10
+            d.rectangle([x, 72 - h, x + 7, 72], fill=ACCENT)
+    d.text((M + 56, 40), "RigCheck", font=f["brand"], fill=TEXT)
     when = datetime.date.fromisoformat(snap["created"]).strftime("%B %d, %Y").replace(" 0", " ")
     d.text((W - M, 44), f"Checked {when}", font=f["small"], fill=MUTED, anchor="ra")
 

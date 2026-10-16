@@ -17,6 +17,7 @@ import time
 
 import hw_advisor as hwa
 import hw_tools
+import sensors
 from hw_advisor import SYSTEM, NO_WINDOW, psutil, powershell_json
 
 WINDOWS = SYSTEM == "Windows" and os.name == "nt"
@@ -25,8 +26,7 @@ _PS_LOOP = r"""
 $ErrorActionPreference = 'SilentlyContinue'
 $counters = @('\Processor(*)\% Processor Time',
               '\Processor Information(_Total)\% Processor Performance',
-              '\GPU Engine(*engtype_3D)\Utilization Percentage',
-              '\GPU Adapter Memory(*)\Dedicated Usage',
+              __GPU_COUNTERS__
               '\Network Interface(*)\Bytes Received/sec',
               '\Network Interface(*)\Bytes Sent/sec',
               '\PhysicalDisk(_Total)\Disk Read Bytes/sec',
@@ -49,7 +49,7 @@ while ($true) {
     elseif ($p -like '*disk write bytes/sec') { $o.dw = $v }
     elseif ($p -like '*% idle time') { $o.idle = $v }
   }
-  if ($i % 3 -eq 0) {
+  if ($i % 10 -eq 0) {
     $sensors = @(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor |
       Where-Object { $_.SensorType -in @('Temperature','Fan','Power') } |
       ForEach-Object { @{n=$_.Name; t=$_.SensorType; v=$_.Value; p=$_.Parent} })
@@ -61,6 +61,37 @@ while ($true) {
 """
 
 
+Q_CLOCK = "Get-CimInstance Win32_Processor | Select MaxClockSpeed"
+# fetched together with the hardware scan, so opening the monitor doesn't wait on PowerShell
+hwa.EXTRA_PREFETCH.append(Q_CLOCK)
+
+
+def _network():
+    """(adapter name, IP, link speed) of the connection used for the internet. Pure Python,
+    so it's instant (the PowerShell equivalent takes a second or two to load)."""
+    ip = None
+    try:  # finds the address used for internet traffic without sending anything
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("1.1.1.1", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except OSError:
+        pass
+    name = speed = None
+    if ip and psutil:
+        try:
+            for nic, addrs in psutil.net_if_addrs().items():
+                if any(a.address == ip for a in addrs):
+                    name = nic
+                    st = psutil.net_if_stats().get(nic)
+                    if st and st.speed:
+                        speed = f"{st.speed / 1000:g} Gbps" if st.speed >= 1000 else f"{st.speed} Mbps"
+                    break
+        except Exception:
+            pass
+    return name, ip, speed
+
+
 def static_info(hw):
     """Details that don't change while monitoring."""
     info = {"cpu_name": hw["cpu"]["name"], "base_mhz": None, "cores": hw["cpu"].get("threads"),
@@ -70,25 +101,10 @@ def static_info(hw):
     info["gpu_name"] = dedicated[0]["name"] if dedicated else None
     info["gpu_vram_total"] = dedicated[0].get("vram_gb") if dedicated else None
     if WINDOWS:
-        p = powershell_json("Get-CimInstance Win32_Processor | Select MaxClockSpeed")
+        p = powershell_json(Q_CLOCK)
         if p:
             info["base_mhz"] = p[0].get("MaxClockSpeed")
-        n = powershell_json(
-            "Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway} | Select-Object -First 1 "
-            "@{n='Alias';e={$_.InterfaceAlias}}, @{n='IP';e={$_.IPv4Address.IPAddress}}, "
-            "@{n='Speed';e={$_.NetAdapter.LinkSpeed}}")
-        if n:
-            info["adapter"], info["ip"], info["link"] = n[0].get("Alias"), n[0].get("IP"), n[0].get("Speed")
-            if isinstance(info["ip"], list):
-                info["ip"] = info["ip"][0]
-    if not info["ip"]:
-        try:  # finds the address used for internet traffic without sending anything
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("1.1.1.1", 80))
-            info["ip"] = s.getsockname()[0]
-            s.close()
-        except OSError:
-            pass
+    info["adapter"], info["ip"], info["link"] = _network()
     info["drives"] = hw_tools.fixed_drives()
     return info
 
@@ -131,12 +147,14 @@ class LiveMonitor:
         self._procs = []
         self._nv = {}
         self._extra = {"procs": [], "ping": None, "drives": []}
+        self._nvidia = False
         self.note = None
 
     # ---------- lifecycle ----------
     def start(self):
         self._stop.clear()
-        if shutil.which("nvidia-smi"):
+        self._nvidia = bool(shutil.which("nvidia-smi"))
+        if self._nvidia:
             nv = subprocess.Popen(
                 ["nvidia-smi", "--query-gpu=utilization.gpu,temperature.gpu,clocks.gr,fan.speed,power.draw,"
                  "memory.used,memory.total", "--format=csv,noheader,nounits", "-l", str(self.interval)],
@@ -145,8 +163,12 @@ class LiveMonitor:
             self._procs.append(nv)
             threading.Thread(target=self._read_nvidia, args=(nv,), daemon=True).start()
         threading.Thread(target=self._slow_loop, daemon=True).start()
+        threading.Thread(target=self._sensor_loop, daemon=True).start()
         if WINDOWS:
-            script = _PS_LOOP.replace("__IV__", str(self.interval))
+            gpu_counters = "" if self._nvidia else (
+                "'\\GPU Engine(*engtype_3D)\\Utilization Percentage',\n"
+                "              '\\GPU Adapter Memory(*)\\Dedicated Usage',")
+            script = _PS_LOOP.replace("__IV__", str(self.interval)).replace("__GPU_COUNTERS__", gpu_counters)
             ps = subprocess.Popen(["powershell", "-NoProfile", "-Command", script], stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL, text=True,
                                   creationflags=NO_WINDOW)
@@ -184,8 +206,21 @@ class LiveMonitor:
                         "gpu_fan": num(f[3]), "gpu_power": num(f[4]), "vram_used": num(f[5]),
                         "vram_total": num(f[6])}
 
+    def _sensor_loop(self):
+        """Processor temperature, power and fan from LibreHardwareMonitor's local feed."""
+        try:
+            sensors.ensure_running()
+        except Exception:
+            pass
+        while not self._stop.is_set():
+            got = sensors.read()
+            self._extra["lhm"] = got or {}
+            self.sensor_feed = got is not None
+            if self._stop.wait(2 if got is not None else 4):
+                break
+
     def _slow_loop(self):
-        """Top programs every 2 s, latency and drive space every 5 s."""
+        """Top programs every 3 s, latency and drive space every 6 s."""
         tick = 0
         if psutil:
             for p in psutil.process_iter():
@@ -193,10 +228,10 @@ class LiveMonitor:
                     p.cpu_percent(None)
                 except Exception:
                     pass
-        while not self._stop.wait(2):
+        while not self._stop.wait(3):
             if psutil:
                 self._extra["procs"] = self._top_programs()
-            if tick % 3 == 0:
+            if tick % 2 == 0:
                 self._extra["ping"] = self._latency()
                 drives = []
                 for d in self.info.get("drives") or []:
@@ -240,8 +275,15 @@ class LiveMonitor:
             return None
 
     def _emit(self, s):
+        s = {k: v for k, v in s.items() if v is not None or k not in self._nv}
         s.update(self._nv)
-        s.update({k: v for k, v in self._extra.items()})
+        extra = dict(self._extra)
+        feed = extra.pop("lhm", None) or {}
+        if self._nvidia:
+            feed.pop("gpu_temp", None)  # NVIDIA's own reading is used instead
+        s.update(extra)
+        s.update(feed)
+        s["sensor_feed"] = bool(getattr(self, "sensor_feed", False))
         s["t"] = time.time()
         self.on_sample(s)
 
@@ -259,8 +301,8 @@ class LiveMonitor:
                 cores = [cores]
             s = {"cpu_load": o.get("total"), "cpu_cores": cores,
                  "cpu_clock": base * o["perf"] / 100 if base and o.get("perf") else None,
-                 "gpu_load": min(o.get("gpu") or 0, 100),
-                 "vram_used": (o.get("vram") or 0) / 1024 ** 2 or None,
+                 "gpu_load": None if self._nvidia else min(o.get("gpu") or 0, 100),
+                 "vram_used": None if self._nvidia else ((o.get("vram") or 0) / 1024 ** 2 or None),
                  "net_down": o.get("rx"), "net_up": o.get("tx"),
                  "disk_read": o.get("dr"), "disk_write": o.get("dw"),
                  "disk_active": max(0, 100 - (o.get("idle") or 100)),
