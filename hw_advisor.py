@@ -39,6 +39,17 @@ NO_WINDOW = 0x08000000 if SYSTEM == "Windows" else 0  # CREATE_NO_WINDOW
 
 def run(cmd, timeout=15):
     """Run a command and return stdout, or '' on any failure."""
+    if isinstance(cmd, list) and cmd and cmd[0] == "nvidia-smi":
+        key = tuple(cmd)
+        if key in _RUN_CACHE:
+            return _RUN_CACHE[key]
+        if _PS_COLLECT is not None:
+            _NV_WANTED.append(cmd)  # dry run: remember it, run it alongside PowerShell
+            return ""
+    return _run(cmd, timeout)
+
+
+def _run(cmd, timeout=15):
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, creationflags=NO_WINDOW,
                              stdin=subprocess.DEVNULL,
@@ -49,22 +60,38 @@ def run(cmd, timeout=15):
         return ""
 
 
+_NV_WANTED = []
 _PS_CACHE = {}         # query -> results, filled by one combined PowerShell call per scan
 _PS_COLLECT = None     # while set, queries are only recorded (see detect_all)
 EXTRA_PREFETCH = []    # queries other modules want fetched with the scan (e.g. the live monitor)
 
 
+_RUN_CACHE = {}        # output of slow tools (nvidia-smi) gathered in parallel during a scan
+SLOW_MODULE_QUERIES = ("Get-PhysicalDisk", "Get-Partition", "Get-StorageReliabilityCounter")
+
+
 def _prefetch(queries):
-    """Run many PowerShell queries in ONE PowerShell process. Starting PowerShell takes about
-    half a second each time, so this is several times faster than one process per query."""
+    """Run the scan's PowerShell queries in as few processes as possible, in parallel.
+    Starting PowerShell costs about half a second, and the Storage commands (drives) take
+    a second or more to load, so those run in their own process at the same time."""
+    import threading
     queries = list(dict.fromkeys(q for q in queries if q not in _PS_CACHE))
-    if not queries:
-        return
+    slow = [q for q in queries if q.startswith(SLOW_MODULE_QUERIES)]
+    fast = [q for q in queries if q not in slow]
+    threads = [threading.Thread(target=_run_batch, args=(g,), daemon=True) for g in (slow, fast) if g]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+
+def _run_batch(queries):
     lines = ["$ErrorActionPreference = 'SilentlyContinue'", "$o = [ordered]@{}"]
     for i, q in enumerate(queries):
         lines.append(f"$o['q{i}'] = @({q})")
     lines.append("$o | ConvertTo-Json -Compress -Depth 5")
-    raw = run(["powershell", "-NoProfile", "-Command", "; ".join(lines)], timeout=60)
+    raw = run(["powershell", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "; ".join(lines)],
+              timeout=60)
     try:
         data = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
@@ -418,9 +445,12 @@ def _detect_everything():
 def detect_all():
     """Scan this PC. On Windows, every query is gathered first and run in one PowerShell call."""
     global _PS_COLLECT
+    import threading
     _PS_CACHE.clear()  # "Scan again" always reads fresh values
+    _RUN_CACHE.clear()
     if SYSTEM == "Windows":
         _PS_COLLECT = []
+        _NV_WANTED.clear()
         try:
             _detect_everything()          # quick dry run that only records the queries
             queries = _PS_COLLECT + EXTRA_PREFETCH
@@ -428,8 +458,17 @@ def detect_all():
             queries = []
         finally:
             _PS_COLLECT = None
+        nv_threads = [threading.Thread(target=lambda c=c: _RUN_CACHE.__setitem__(tuple(c), _run(c)),
+                                       daemon=True) for c in _NV_WANTED]
+        for t in nv_threads:
+            t.start()
         _prefetch(queries)
-    return _detect_everything()
+        for t in nv_threads:
+            t.join(15)
+    try:
+        return _detect_everything()
+    finally:
+        _RUN_CACHE.clear()
 
 
 # ----------------------------------------------------------------------------
@@ -1050,7 +1089,7 @@ def print_report(hw, recs, profile):
         print(f"\n{line}\n  BEFORE YOU BUY\n{line}")
         for chk in checks:
             print(f" - {chk}")
-    print(f"\nParts list current as of {parts_db.DB_DATE}. Prices change daily, so compare before buying.")
+    print(f"\nPrices from {parts_db.DB_DATE}. They change daily, so compare before buying.")
     if not psutil:
         print("Tip: `pip install psutil` for more accurate detection.")
     print()
@@ -1062,6 +1101,11 @@ def main():
                     help="what you mainly use the computer for")
     ap.add_argument("--json", action="store_true", help="output JSON instead of a report")
     args = ap.parse_args()
+    try:
+        import prices
+        prices.load()
+    except Exception:
+        pass
 
     try:
         import hw_store

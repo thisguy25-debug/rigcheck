@@ -12,7 +12,7 @@ import ssl
 import urllib.error
 import urllib.request
 
-APP_VERSION = "1.8.0"
+APP_VERSION = "1.11.0"
 UPDATE_REPO = "thisguy25-debug/rigcheck"
 
 

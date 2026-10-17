@@ -117,15 +117,20 @@ def set_app_id():
 
 def apply_window_icon(window):
     import os
+    # The same artwork the .exe file uses, at every size Windows asks for
+    # (16-24 px for the title bar, 32-48 px for the taskbar and Alt+Tab).
     try:
         ico = resource("rigcheck.ico")
         if hwa.SYSTEM == "Windows" and os.path.exists(ico):
             window.iconbitmap(default=ico)  # also used by every dialog
-        else:
-            png = resource("rigcheck_64.png")
-            if os.path.exists(png):
-                window._icon_img = tk.PhotoImage(file=png)
-                window.iconphoto(True, window._icon_img)
+    except tk.TclError:
+        pass
+    try:
+        imgs = [tk.PhotoImage(file=resource(f"rigcheck_{s}.png")) for s in (64, 48, 32, 24, 16)
+                if os.path.exists(resource(f"rigcheck_{s}.png"))]
+        if imgs:
+            window._icon_imgs = imgs
+            window.iconphoto(True, *imgs)
     except tk.TclError:
         pass
 
@@ -190,12 +195,21 @@ def setup_styles(root):
     style.configure("Sub.TLabel", foreground=MUTED)
     style.configure("CardTitle.TLabel", background=CARD, foreground=MUTED, font=base_font(9))
     style.configure("CardBody.TLabel", background=CARD, foreground=TEXT, font=base_font(10))
+    style.configure("CardWarn.TLabel", background=CARD, foreground=AMBER, font=base_font(10))
+    style.configure("CardLink.TLabel", background=CARD, foreground=ACCENT, font=base_font(10, "bold"))
     style.configure("Section.TLabel", font=display_font(13))
 
     # Buttons: flat, with a single filled primary
     style.configure("TButton", background=RAISED, foreground=TEXT, borderwidth=0, focusthickness=0,
                     padding=(px(14), px(7)), relief="flat")
     style.map("TButton", background=[("disabled", CARD), ("active", LINE)],
+              foreground=[("disabled", MUTED)])
+    style.configure("TMenubutton", background=RAISED, foreground=TEXT, borderwidth=0, relief="flat",
+                    padding=(px(14), px(7)), arrowsize=0)
+    style.layout("TMenubutton", [("Menubutton.border", {"sticky": "nswe", "children": [
+        ("Menubutton.padding", {"sticky": "nswe", "children": [
+            ("Menubutton.label", {"sticky": "nswe"})]})]})])
+    style.map("TMenubutton", background=[("disabled", CARD), ("active", LINE)],
               foreground=[("disabled", MUTED)])
     style.configure("Accent.TButton", background=ACCENT, foreground=ON_COLOR,
                     font=base_font(10, "bold"))

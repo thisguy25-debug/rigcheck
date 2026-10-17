@@ -94,7 +94,6 @@ class SettingsTab(ttk.Frame):
                         variable=self.pin16, command=self._on_pc).pack(anchor="w", pady=(px(8), 0))
         self.length = self._entry(c, "Longest graphics card that fits", "mm",
                                   "From the back of the case to the first obstacle at the front.")
-
         # ---------- Live monitor
         c = self._card(body, "Live monitor", 1, 0, gap, "Slower updates use a little less processor time.")
         self.interval = tk.IntVar()
@@ -148,14 +147,17 @@ class SettingsTab(ttk.Frame):
 
         # ---------- Your data
         c = self._card(body, "Your data", 3, 0, gap,
-                       "Settings, history and edited prices are stored on this PC only.", span=2)
+                       "Settings and history are stored on this PC only.", span=2)
         row = tk.Frame(c, bg=CARD)
         row.pack(anchor="w", pady=(px(4), 0))
         ttk.Button(row, text="Open data folder",
                    command=lambda: hw_tools.open_in_file_manager(hw_store.data_dir())).pack(side="left")
-        ttk.Button(row, text="Reset edited prices", command=self._reset_prices).pack(side="left", padx=px(8))
-        ttk.Button(row, text="Clear history", command=self._clear_history).pack(side="left")
+        ttk.Button(row, text="Clear history", command=self._clear_history).pack(side="left", padx=px(8))
         ttk.Button(row, text="Reset all settings", command=self._reset_all).pack(side="left", padx=px(8))
+        import cleanup
+        if cleanup.old_helper_present():
+            self.helper_btn = ttk.Button(row, text="Remove old sensor helper", command=self.app.remove_old_helper)
+            self.helper_btn.pack(side="left")
 
         app.notebook.bind("<<NotebookTabChanged>>", lambda e: self.refresh() if self._visible() else None,
                           add="+")

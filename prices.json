@@ -1,0 +1,35 @@
+{
+  "updated": "2026-10-16",
+  "note": "US prices. Edit this file on GitHub to update prices for everyone; RigCheck downloads it each time it opens. Keep the names exactly as they are.",
+  "sources": "Amazon and eBay lows via gpudeals.net (Oct 16), Newegg via thehardwarecore.com (Oct 12), Tom's Hardware RAM price index (Oct 16), Samsung SSD prices (Oct 2), used prices from eBay sold listings via getpcparts.com (Oct 10). Prices marked as estimates in parts_db were scaled from European prices.",
+  "gpu": {
+    "Radeon RX 9060 XT 16GB": 529, "GeForce RTX 5060 Ti 16GB": 771, "Radeon RX 9070 GRE": 579,
+    "GeForce RTX 5070": 856, "Radeon RX 9070": 700, "Radeon RX 9070 XT": 830,
+    "GeForce RTX 5070 Ti": 1250, "GeForce RTX 5080": 1779, "GeForce RTX 5090": 6500
+  },
+  "cpu": {
+    "AMD Ryzen 7 9800X3D": 469, "AMD Ryzen 5 9600X": 220, "AMD Ryzen 7 9700X": 279,
+    "AMD Ryzen 9 9900X": 389, "AMD Ryzen 9 9950X": 579, "AMD Ryzen 9 9950X3D": 669,
+    "AMD Ryzen 7 5700X3D": 279, "AMD Ryzen 7 5800X3D": 349, "AMD Ryzen 9 5900X": 289,
+    "AMD Ryzen 9 5950X": 379, "Intel Core i5-14600K": 279, "Intel Core i7-14700F": 359,
+    "Intel Core i7-14700K": 399, "Intel Core i9-14900F": 469, "Intel Core i9-14900K": 519,
+    "Intel Core Ultra 7 265K": 329, "Intel Core Ultra 9 285K": 569,
+    "Intel Core i7-9700K": 150, "Intel Core i9-9900K": 200, "Intel Core i9-10900K": 280,
+    "Intel Core i7-11700K": 200, "Intel Core i9-11900K": 260,
+    "B850 motherboard": 219, "X870 motherboard": 299
+  },
+  "ram": {"DDR4-16": 104, "DDR4-32": 198, "DDR4-64": 489, "DDR5-16": 279, "DDR5-32": 454, "DDR5-64": 915},
+  "ssd_per_tb": {
+    "Samsung 990 Pro": 195, "WD_Black SN850X": 180, "Crucial T500": 215, "WD Blue SN5000": 150,
+    "Samsung 990 EVO Plus": 185, "Crucial T705": 260, "Samsung 9100 Pro": 200,
+    "Samsung 870 EVO": 175, "Crucial MX500": 160, "Samsung T9": 200, "Crucial X10": 190
+  },
+  "psu": {"650": 70, "750": 80, "850": 95, "1000": 110},
+  "used_gpu": {
+    "rtx 2060": 133, "rtx 2070 super": 177, "rtx 3060": 295, "rtx 3060 ti": 231, "rtx 3070": 259,
+    "rtx 3080": 358, "rtx 4060": 249, "rtx 4060 ti": 331, "rtx 4070": 525, "rtx 4070 super": 538,
+    "rtx 4070 ti": 723, "rtx 4080": 910, "rtx 4090": 2214, "gtx 1660 super": 100,
+    "gtx 1080 ti": 155, "rx 580": 65, "rx 6600": 186, "rx 6700 xt": 290, "rx 6800 xt": 385,
+    "rx 7800 xt": 477, "rx 7900 xtx": 903
+  }
+}

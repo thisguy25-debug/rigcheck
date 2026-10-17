@@ -217,23 +217,13 @@ class MonitorTab(ttk.Frame):
         body.pack(fill="x", pady=(px(8), 0))
         self.cpu_ring = Ring(body)
         self.cpu_ring.pack(side="left")
-        g, self.cpu_stats = self.cpu.stats(body, ["Temperature", "Clock speed", "Power", "Fan"])
+        g, self.cpu_stats = self.cpu.stats(body, ["Clock speed", "Busiest core", "Cores", "Up time"])
         g.pack(side="left", fill="x", expand=True, padx=(px(18), 0))
         tk.Label(self.cpu, text="Each core", bg=CARD, fg=MUTED, font=base_font(8)).pack(anchor="w", pady=(px(6), 0))
         self.cores = CoreBars(self.cpu)
         self.cores.pack(fill="x")
         self.cpu_spark = Spark(self.cpu, height=30)
         self.cpu_spark.pack(fill="x", pady=(px(6), 0))
-        self.cpu_note = tk.Frame(self.cpu, bg=CARD)
-        self.cpu_note._no_click = True
-        self.cpu_note_text = tk.Label(self.cpu_note, text="", bg=CARD, fg=MUTED, font=base_font(8), anchor="w",
-                                      justify="left", wraplength=px(300))
-        self.cpu_note_text.pack(side="left", fill="x", expand=True)
-        self.sensor_btn = ttk.Button(self.cpu_note, text="Turn on sensors", command=self.setup_sensors)
-        self.sensor_btn.pack(side="right", padx=(px(8), 0))
-        self._sensor_busy = False
-        self._no_feed = 0
-
         # ----- GPU
         self.gpu = Card(grid, "Graphics")
         self.gpu.grid(row=0, column=3, columnspan=3, sticky="nsew", padx=(gap // 2, 0), pady=(0, gap))
@@ -344,53 +334,6 @@ class MonitorTab(ttk.Frame):
             self._minimized = False
             self._on_tab()
 
-    # ---------- processor sensors (LibreHardwareMonitor) ----------
-    def _show_sensor_offer(self):
-        import sensors
-        if sensors.is_installed():
-            self.cpu_note_text.configure(text="The sensor helper is installed but not running.")
-            self.sensor_btn.configure(text="Start sensors")
-        else:
-            self.cpu_note_text.configure(text="Temperature, power and fan need a free sensor helper "
-                                              "(LibreHardwareMonitor). Setup takes about a minute.")
-            self.sensor_btn.configure(text="Turn on sensors")
-        self.sensor_btn.state(["!disabled"])
-        self.cpu_note.pack(fill="x", pady=(px(4), 0))
-
-    def setup_sensors(self):
-        import sensors
-        self._sensor_busy = True
-        self.sensor_btn.state(["disabled"])
-
-        def say(msg):
-            self.after(0, lambda: self.cpu_note_text.configure(text=msg))
-
-        def work():
-            if not sensors.is_installed():
-                sensors.download(say)
-            else:
-                sensors.write_config()
-            say("Click Yes on the Windows permission prompt…")
-            return sensors.register_and_start()
-
-        def done(ok, err):
-            self._sensor_busy = False
-            self.sensor_btn.state(["!disabled"])
-            if err:
-                reason = str(err) if isinstance(err, RuntimeError) else "couldn't reach GitHub to download it"
-                self.cpu_note_text.configure(text=f"Setup didn't finish: {reason}. Try again in a minute.")
-            elif not ok:
-                self.cpu_note_text.configure(text="Windows permission was declined, so the sensors can't "
-                                                  "start. Click to try again.")
-                self.sensor_btn.configure(text="Try again")
-            else:
-                self.cpu_note_text.configure(text="Starting. If LibreHardwareMonitor asks to install "
-                                                  "PawnIO, click OK. Readings appear here in a few seconds, "
-                                                  "and from now on it starts with Windows.")
-                self.sensor_btn.pack_forget()
-                self.after(60000, lambda: self.sensor_btn.pack(side="right", padx=(px(8), 0)))
-        in_thread(self, work, done)
-
     def hw_ready(self):
         if self._visible() and not self.paused:
             self.start()
@@ -494,21 +437,20 @@ class MonitorTab(ttk.Frame):
             self._update_detail(s)
         # CPU
         self.cpu_ring.set(s.get("cpu_load"))
-        t = s.get("cpu_temp")
-        self.cpu_stats["Temperature"].configure(text=gc.fmt_temp(t),
-                                                fg=temp_color(t, 80, 92) if t is not None else MUTED)
         clk = s.get("cpu_clock")
         self.cpu_stats["Clock speed"].configure(text=f"{clk / 1000:.2f} GHz" if clk else "–")
-        self.cpu_stats["Power"].configure(text=f"{s['cpu_power']:.0f} W" if s.get("cpu_power") else "–")
-        self.cpu_stats["Fan"].configure(text=f"{s['cpu_fan']:,} RPM" if s.get("cpu_fan") else "–")
+        cores = [c for c in (s.get("cpu_cores") or []) if isinstance(c, (int, float))]
+        busiest = max(cores) if cores else None
+        self.cpu_stats["Busiest core"].configure(
+            text=f"{busiest:.0f}%" if busiest is not None else "–",
+            fg=temp_color(busiest, 85, 97) if busiest is not None else MUTED)
+        c = (self.app.hw or {}).get("cpu", {})
+        self.cpu_stats["Cores"].configure(
+            text=f"{c['cores']} cores, {c['threads']} threads" if c.get("cores") and c.get("threads") else "–")
+        self.cpu_stats["Up time"].configure(text=_uptime())
         self.cores.set(s.get("cpu_cores"))
         self._push("cpu", s.get("cpu_load"))
         self.cpu_spark.set([(self.hist["cpu"], ACCENT)])
-        self._no_feed = 0 if t is not None else self._no_feed + 1
-        if t is None and hw_tools.WINDOWS and self._no_feed >= 6 and not self.cpu_note.winfo_ismapped():
-            self._show_sensor_offer()
-        elif t is not None and self.cpu_note.winfo_ismapped() and not self._sensor_busy:
-            self.cpu_note.pack_forget()
 
         # GPU
         self.gpu_ring.set(s.get("gpu_load"))
@@ -633,6 +575,24 @@ class Chart(tk.Frame):
         self.spark.set([([v or 0 for v in values], self.color)])
 
 
+def _uptime():
+    """Time since Windows last restarted. Shutting down with Fast Startup on doesn't reset it."""
+    try:
+        if hw_tools.WINDOWS:
+            import ctypes
+            ctypes.windll.kernel32.GetTickCount64.restype = ctypes.c_ulonglong
+            secs = ctypes.windll.kernel32.GetTickCount64() / 1000
+        else:
+            import time
+            with open("/proc/uptime") as f:
+                secs = float(f.read().split()[0])
+    except Exception:
+        return "–"
+    d, rem = divmod(int(secs), 86400)
+    h, m = rem // 3600, rem % 3600 // 60
+    return f"{d} d {h} h" if d else f"{h} h {m} min"
+
+
 def _ghz(mhz):
     return f"{mhz / 1000:.2f} GHz"
 
@@ -641,11 +601,8 @@ DETAILS = {
     # kind: (title, [(chart title, history key, formatter, fixed max, note when empty)])
     "cpu": ("Processor", [
         ("Load", "cpu_load", lambda v: f"{v:.0f}%", 100, ""),
-        ("Temperature", "cpu_temp", lambda v: gc.fmt_temp(v), 100,
-         "Needs LibreHardwareMonitor running (free; see the Health page)"),
         ("Clock speed", "cpu_clock", _ghz, None, ""),
-        ("Power", "cpu_power", lambda v: f"{v:.0f} W", None,
-         "Needs LibreHardwareMonitor running (free; see the Health page)")]),
+        ("Busiest core", "cpu_peak", lambda v: f"{v:.0f}%", 100, "")]),
     "gpu": ("Graphics", [
         ("Load", "gpu_load", lambda v: f"{v:.0f}%", 100, ""),
         ("Temperature", "gpu_temp", lambda v: gc.fmt_temp(v), 100, "Not reported by this graphics card"),
@@ -668,8 +625,8 @@ DETAILS = {
 def _mt_push(self, s):
     vram = s.get("vram_used")
     values = {
-        "cpu_load": s.get("cpu_load"), "cpu_temp": s.get("cpu_temp"), "cpu_clock": s.get("cpu_clock"),
-        "cpu_power": s.get("cpu_power"), "gpu_load": s.get("gpu_load"), "gpu_temp": s.get("gpu_temp"),
+        "cpu_load": s.get("cpu_load"), "cpu_clock": s.get("cpu_clock"),
+        "cpu_peak": max([c for c in (s.get("cpu_cores") or []) if isinstance(c, (int, float))], default=None), "gpu_load": s.get("gpu_load"), "gpu_temp": s.get("gpu_temp"),
         "gpu_clock": s.get("gpu_clock"), "vram_gb": vram / 1024 if vram else None,
         "ram_load": s.get("ram_load"), "ram_gb": s.get("ram_used"),
         "down_mbps": s["net_down"] * 8 / 1e6 if s.get("net_down") is not None else None,

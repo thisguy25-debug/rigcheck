@@ -1,5 +1,5 @@
 """
-Part prices for the Budget planner and upgrade suggestions.
+Part prices for upgrade suggestions.
 
 RigCheck ships with a prices.json, and each time it opens it downloads the latest
 prices.json from the GitHub repository (the same one used for updates). Editing that one

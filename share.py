@@ -6,6 +6,7 @@ comparing your PC with a friend's.
 import datetime
 import json
 import os
+import re
 import subprocess
 
 import app_info
@@ -206,6 +207,62 @@ def copy_image_to_clipboard(path):
     r = subprocess.run(["powershell", "-NoProfile", "-STA", "-Command", script], capture_output=True,
                        creationflags=hwa.NO_WINDOW, stdin=subprocess.DEVNULL, timeout=20)
     return r.returncode == 0
+
+
+# ----------------------------------------------------------------------------
+# Posting to Reddit and Discord
+# ----------------------------------------------------------------------------
+# (subreddit, what it's for). r/pcmasterrace for showing off, r/buildapc for upgrade advice.
+SUBREDDITS = [("pcmasterrace", "Show off your rig"),
+              ("buildapc", "Ask for upgrade advice"),
+              ("PcBuildHelp", "Ask for help with a problem")]
+
+
+def _short(text):
+    return re.sub(r"^(Intel |AMD |NVIDIA )", "", text or "").split(",")[0].strip()
+
+
+def post_title(snap, subreddit):
+    cpu, gpu = _short(snap["specs"].get("Processor")), _short(snap["specs"].get("Graphics"))
+    if subreddit == "pcmasterrace":
+        return f"{snap['name']}: {cpu} + {gpu}"
+    return f"Upgrade advice for my {cpu} + {gpu} PC?" if subreddit == "buildapc" \
+        else f"Help with my {cpu} + {gpu} PC"
+
+
+def post_text(snap):
+    """Markdown summary of the rig for a Reddit post (Discord uses the card image)."""
+    lines = []
+    for label in ("Processor", "Graphics", "Memory", "Storage", "System"):
+        if snap["specs"].get(label):
+            lines.append(f"* **{label}:** {snap['specs'][label]}")
+    weak = [r for r in snap["ratings"] if r.get("status") in ("bad", "Bad", "warn", "Caution")]
+    if weak:
+        lines.append("")
+        lines.append("RigCheck says: " + "; ".join(f"{r['label']} {r['note'].lower()}" for r in weak) + ".")
+    lines += ["", "*Checked with RigCheck.*"]
+    return "\n".join(lines)
+
+
+def reddit_url(snap, subreddit):
+    from urllib.parse import urlencode
+    return f"https://www.reddit.com/r/{subreddit}/submit?" + urlencode(
+        {"title": post_title(snap, subreddit), "text": post_text(snap)})
+
+
+def open_discord():
+    """Open the Discord app if it's installed, otherwise Discord in the browser."""
+    import webbrowser
+    if hwa.SYSTEM == "Windows":
+        try:
+            import winreg
+            winreg.CloseKey(winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "discord"))
+            os.startfile("discord://-/channels/@me")
+            return "app"
+        except OSError:
+            pass
+    webbrowser.open("https://discord.com/channels/@me")
+    return "web"
 
 
 def default_card_folder():

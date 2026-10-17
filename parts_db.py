@@ -398,3 +398,27 @@ def estimate_resale(hw, component):
         new = RAM_PRICES.get((r["type"], size))
         return (f"{size} GB {r['type']} memory", round(new * USED_RAM_FACTOR) if new else None)
     return None
+
+
+# ----------------------------------------------------------------------------
+# Applying a price list (prices.json, bundled and downloaded from GitHub)
+# ----------------------------------------------------------------------------
+def apply_prices(data):
+    """Overwrite the price tables above with a prices.json dictionary."""
+    global DB_DATE
+    for g in GPU_CATALOG:
+        if g["name"] in data.get("gpu", {}):
+            g["price"] = int(data["gpu"][g["name"]])
+    CPU_PRICES.update({k: int(v) for k, v in data.get("cpu", {}).items()})
+    for key, v in data.get("ram", {}).items():
+        kind, size = key.split("-")
+        RAM_PRICES[(kind, int(size))] = int(v)
+    SSD_PRICE_PER_TB.update({k: int(v) for k, v in data.get("ssd_per_tb", {}).items()})
+    PSU_PRICES.update({int(k): int(v) for k, v in data.get("psu", {}).items()})
+    USED_GPU.update({k.lower(): int(v) for k, v in data.get("used_gpu", {}).items()})
+    if data.get("updated"):
+        import datetime
+        try:
+            DB_DATE = datetime.date.fromisoformat(data["updated"]).strftime("%B %d, %Y").replace(" 0", " ")
+        except ValueError:
+            DB_DATE = data["updated"]

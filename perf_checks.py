@@ -78,8 +78,36 @@ def _devmode(device, index):
     return dm if ok else None
 
 
+def parse_edid(edid):
+    """(native width, native height, monitor name) from a monitor's EDID block, or None."""
+    if not edid or len(edid) < 128 or bytes(edid[:8]) != b"\x00\xff\xff\xff\xff\xff\xff\x00":
+        return None
+    b = bytes(edid)
+    w = h = None
+    name = ""
+    for off in (54, 72, 90, 108):
+        d = b[off:off + 18]
+        if d[0] or d[1]:  # a detailed timing; the first one is the panel's native mode
+            if w is None:
+                w = d[2] | ((d[4] & 0xF0) << 4)
+                h = d[5] | ((d[7] & 0xF0) << 4)
+        elif d[3] == 0xFC:  # monitor name
+            name = d[5:18].split(b"\n")[0].decode("ascii", "ignore").strip()
+    return (w, h, name) if w and h else None
+
+
+def _edid_for(interface_name):
+    """EDID from the registry for a monitor's device interface name
+    (\\?\\DISPLAY#DEL4100#5&abc&0&UID4352#{guid}). Readable without administrator rights."""
+    parts = interface_name.split("#")
+    if len(parts) < 3 or not parts[0].upper().endswith("DISPLAY"):
+        return None
+    path = rf"SYSTEM\CurrentControlSet\Enum\DISPLAY\{parts[1]}\{parts[2]}\Device Parameters"
+    return _reg_get(winreg.HKEY_LOCAL_MACHINE, path, "EDID")
+
+
 def displays():
-    """Active monitors with their current and best available refresh rate."""
+    """Active monitors: current mode, best refresh rate, and the panel's native resolution."""
     if not WINDOWS:
         return []
     out = []
@@ -96,22 +124,75 @@ def displays():
         cur = _devmode(dd.DeviceName, ENUM_CURRENT_SETTINGS)
         if not cur:
             continue
-        best, n = cur.dmDisplayFrequency, 0
+        modes, n = [], 0
         while True:
             m = _devmode(dd.DeviceName, n)
             if not m:
                 break
             n += 1
-            if (m.dmPelsWidth, m.dmPelsHeight) == (cur.dmPelsWidth, cur.dmPelsHeight) \
-                    and m.dmBitsPerPel >= cur.dmBitsPerPel and not m.dmDisplayFlags & 0x2:  # skip interlaced
-                best = max(best, m.dmDisplayFrequency)
+            if m.dmBitsPerPel >= min(cur.dmBitsPerPel, 32) and not m.dmDisplayFlags & 0x2:  # skip interlaced
+                modes.append((m.dmPelsWidth, m.dmPelsHeight, m.dmDisplayFrequency))
+        cur_size = (cur.dmPelsWidth, cur.dmPelsHeight)
+        best = max([hz for w, h, hz in modes if (w, h) == cur_size] + [cur.dmDisplayFrequency])
         mon = DISPLAY_DEVICEW()
         mon.cb = ctypes.sizeof(mon)
         monitor = mon.DeviceString if user32.EnumDisplayDevicesW(dd.DeviceName, 0, ctypes.byref(mon), 0) else ""
-        out.append({"device": dd.DeviceName, "adapter": dd.DeviceString, "monitor": monitor,
-                    "primary": bool(dd.StateFlags & 0x4), "width": cur.dmPelsWidth,
-                    "height": cur.dmPelsHeight, "hz": cur.dmDisplayFrequency, "max_hz": best})
+        native = None
+        iface = DISPLAY_DEVICEW()
+        iface.cb = ctypes.sizeof(iface)
+        if user32.EnumDisplayDevicesW(dd.DeviceName, 0, ctypes.byref(iface), 1):  # EDD_GET_DEVICE_INTERFACE_NAME
+            native = parse_edid(_edid_for(iface.DeviceID))
+        d = {"device": dd.DeviceName, "adapter": dd.DeviceString, "monitor": monitor,
+             "primary": bool(dd.StateFlags & 0x4), "width": cur.dmPelsWidth,
+             "height": cur.dmPelsHeight, "hz": cur.dmDisplayFrequency, "max_hz": best,
+             "native_w": None, "native_h": None, "native_hz": None}
+        if native:
+            nw, nh, name = native
+            if name:
+                d["monitor"] = name
+            # Only trust the native size if Windows offers it (a TV may report one it can't take here)
+            rates = [hz for w, h, hz in modes if (w, h) == (nw, nh)]
+            if rates:
+                d.update(native_w=nw, native_h=nh, native_hz=max(rates))
+        out.append(d)
     return out
+
+
+def display_issues(d, hw=None):
+    """Plain-English problems with one monitor, and the mode that fixes them (or None)."""
+    issues, fix = [], None
+    low_res = d["native_w"] and (d["width"], d["height"]) != (d["native_w"], d["native_h"]) \
+        and d["width"] * d["height"] < d["native_w"] * d["native_h"]
+    if low_res:
+        issues.append(f"Running at {d['width']}×{d['height']}, but the screen is "
+                      f"{d['native_w']}×{d['native_h']}. Below full resolution everything looks softer.")
+        hz = d["native_hz"] if d["native_hz"] and d["native_hz"] >= d["hz"] else d["hz"]
+        fix = (d["native_w"], d["native_h"], hz)
+    best_hz = fix[2] if fix else d["max_hz"]
+    if best_hz >= 75 and d["hz"] < best_hz - 1:
+        issues.append(f"Running at {d['hz']} Hz, but it supports {best_hz} Hz. Games look smoother "
+                      "and feel more responsive at the higher rate.")
+        if not fix:
+            fix = (d["width"], d["height"], best_hz)
+    dedicated = [g for g in (hw or {}).get("gpu", []) if not g.get("integrated")]
+    if dedicated and any(h in d["adapter"].lower() for h in INTEGRATED_HINTS):
+        issues.append(f"Plugged into the motherboard, so {d['adapter']} draws the picture instead of your "
+                      f"{dedicated[0]['name']}. Move the cable to the ports on the graphics card, lower "
+                      "down on the back of the PC.")
+    return issues, fix
+
+
+def set_mode(device, width, height, hz):
+    """Change resolution and refresh rate together. Returns True on success; saved across restarts."""
+    dm = _devmode(device, ENUM_CURRENT_SETTINGS)
+    if not dm:
+        return False
+    dm.dmPelsWidth, dm.dmPelsHeight, dm.dmDisplayFrequency = width, height, hz
+    dm.dmFields = DM_DISPLAYFREQUENCY | 0x80000 | 0x100000  # | DM_PELSWIDTH | DM_PELSHEIGHT
+    change = ctypes.windll.user32.ChangeDisplaySettingsExW
+    if change(device, ctypes.byref(dm), None, CDS_TEST, None) != 0:
+        return False
+    return change(device, ctypes.byref(dm), None, CDS_UPDATEREGISTRY, None) == 0
 
 
 def set_refresh_rate(device, hz):

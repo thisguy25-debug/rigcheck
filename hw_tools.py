@@ -270,42 +270,6 @@ def open_disk_cleanup():
 # =============================================================================
 # 2. Drive health
 # =============================================================================
-def _smartctl_health():
-    if not shutil.which("smartctl"):
-        return None
-    scan = run(["smartctl", "--scan-open", "-j"], timeout=20)
-    try:
-        devices = json.loads(scan).get("devices", [])
-    except (json.JSONDecodeError, AttributeError):
-        return None
-    drives = []
-    for dev in devices:
-        cmd = ["smartctl", "-a", "-j", dev["name"]]
-        if dev.get("type"):
-            cmd[3:3] = ["-d", dev["type"]]
-        try:
-            d = json.loads(run(cmd, timeout=30) or "{}")
-        except json.JSONDecodeError:
-            continue
-        if not d.get("model_name"):
-            continue
-        attrs = {a["id"]: a.get("raw", {}).get("value") for a in
-                 d.get("ata_smart_attributes", {}).get("table", [])}
-        nv = d.get("nvme_smart_health_information_log", {})
-        drives.append({
-            "name": d.get("model_name"),
-            "type": "SSD" if d.get("rotation_rate", 1) == 0 or nv else "HDD",
-            "passed": d.get("smart_status", {}).get("passed"),
-            "temp": d.get("temperature", {}).get("current"),
-            "hours": d.get("power_on_time", {}).get("hours"),
-            "wear": nv.get("percentage_used"),
-            "reallocated": attrs.get(5), "pending": attrs.get(197),
-            "uncorrectable": attrs.get(198) or nv.get("media_errors"),
-            "firmware": d.get("firmware_version"), "source": "smartctl",
-        })
-    return drives
-
-
 def _windows_health():
     rows = powershell_json(
         "Get-PhysicalDisk | ForEach-Object { $r = $_ | Get-StorageReliabilityCounter "
@@ -365,14 +329,13 @@ def assess_drive(d):
     if caution:
         return "Caution", caution
     if d.get("passed") is None and wear is None and d.get("hours") is None:
-        return "Unknown", ["Detailed health data needs administrator rights (or smartmontools)"]
+        return "Unknown", ["Detailed health data needs administrator rights"]
     return "Good", ["No problems reported"]
 
 
 def drive_health():
     """List of drives with health verdicts."""
-    drives = _smartctl_health()
-    failing = False
+    drives, failing = None, False
     if not drives:
         if WINDOWS:
             drives, failing = _windows_health()
@@ -433,21 +396,6 @@ def nvidia_status():
 def cpu_temperature():
     """Returns (temp °C or None, source description)."""
     if WINDOWS:
-        for ns in ("root/LibreHardwareMonitor", "root/OpenHardwareMonitor"):
-            rows = powershell_json(
-                f"Get-CimInstance -Namespace {ns} -ClassName Sensor -ErrorAction SilentlyContinue "
-                "| Where-Object {$_.SensorType -eq 'Temperature'} | Select Name,Value,Parent")
-            cpu = [r for r in rows if "cpu" in str(r.get("Parent", "")).lower()
-                   or "amdcpu" in str(r.get("Parent", "")).lower()
-                   or "intelcpu" in str(r.get("Parent", "")).lower()]
-            for pref in ("CPU Package", "Core (Tctl/Tdie)", "Core Max", "Core Average"):
-                for r in cpu:
-                    if r.get("Name") == pref and r.get("Value"):
-                        return round(r["Value"], 1), ns.split("/")[1]
-            if cpu:
-                vals = [r["Value"] for r in cpu if r.get("Value")]
-                if vals:
-                    return round(max(vals), 1), ns.split("/")[1]
         zones = powershell_json("Get-CimInstance -Namespace root/wmi -ClassName "
                                 "MSAcpi_ThermalZoneTemperature -ErrorAction SilentlyContinue "
                                 "| Select CurrentTemperature")

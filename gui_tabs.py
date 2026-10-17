@@ -291,19 +291,15 @@ class HealthTab(ttk.Frame):
             o.write("\n", "gap")
         if hwa.SYSTEM == "Windows" and not hwa.is_admin():
             o.write("Tip: ", "bold")
-            o.write("restart as administrator for detailed data like wear level and error counts. ")
-            o.write("For the most detail, install ")
-            o.link("smartmontools", "https://www.smartmontools.org/wiki/Download")
-            o.write(" and the app will use it automatically.\n")
+            o.write("restart as administrator for detailed data like wear level and error counts.\n")
 
         o.write("\nTemperatures\n", "h1")
         if sensors["cpu_temp"] is not None:
             o.write(f"CPU: {gc.fmt_temp(sensors['cpu_temp'], 1)}", "bold")
             o.write(f"   (source: {sensors['cpu_source']})\n", "muted")
         else:
-            o.write("CPU temperature isn't available without a helper. Install and run ", "muted")
-            o.link("LibreHardwareMonitor", "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases")
-            o.write(" (free); the app reads its sensors automatically while it's open.\n", "muted")
+            o.write("Windows doesn't report this processor's temperature to programs. Reading it needs a "
+                    "third-party hardware driver, which RigCheck doesn't install.\n", "muted")
         for g in sensors["gpus"]:
             bits = [gc.fmt_temp(g["temp"]) if g["temp"] is not None else None,
                     f"{g['util']:.0f}% busy" if g["util"] is not None else None,
@@ -879,16 +875,19 @@ class RefreshConfirm(tk.Toplevel):
     """After switching refresh rate: keep it, or it reverts on its own in 15 seconds."""
 
     def __init__(self, app, device, new_hz, old_hz, on_done):
+        """new_hz may be a description ("2560×1440 at 165 Hz") and old_hz a (width, height, hz) mode."""
         super().__init__(app)
         self.device, self.old_hz, self.on_done, self.left = device, old_hz, on_done, 15
-        self.title("Keep this refresh rate?")
+        self.new_text = f"{new_hz} Hz" if isinstance(new_hz, int) else new_hz
+        self.old_text = f"{old_hz} Hz" if isinstance(old_hz, int) else f"{old_hz[0]}×{old_hz[1]} at {old_hz[2]} Hz"
+        self.title("Keep this setting?")
         self.configure(bg=BG)
         self.transient(app)
         gc.dark_title_bar(self)
         self.attributes("-topmost", True)
         f = ttk.Frame(self, padding=px(24))
         f.pack(fill="both", expand=True)
-        ttk.Label(f, text=f"Your monitor is now at {new_hz} Hz", style="Section.TLabel").pack(anchor="w")
+        ttk.Label(f, text=f"Your monitor is now at {self.new_text}", style="Section.TLabel").pack(anchor="w")
         self.msg = ttk.Label(f, style="Sub.TLabel", wraplength=px(380))
         self.msg.pack(anchor="w", pady=(px(6), px(18)))
         b = ttk.Frame(f)
@@ -902,7 +901,7 @@ class RefreshConfirm(tk.Toplevel):
         if not self.winfo_exists():
             return
         self.msg.configure(text=f"If everything looks right, keep it. Otherwise it goes back to "
-                                f"{self.old_hz} Hz in {self.left} seconds.")
+                                f"{self.old_text} in {self.left} seconds.")
         if self.left <= 0:
             self.revert()
             return
@@ -915,7 +914,10 @@ class RefreshConfirm(tk.Toplevel):
 
     def revert(self):
         import perf_checks
-        perf_checks.set_refresh_rate(self.device, self.old_hz)
+        if isinstance(self.old_hz, int):
+            perf_checks.set_refresh_rate(self.device, self.old_hz)
+        else:
+            perf_checks.set_mode(self.device, *self.old_hz)
         self.destroy()
         self.on_done(False)
 
@@ -1056,6 +1058,15 @@ class ShareTab(ttk.Frame):
         if hwa.SYSTEM == "Windows":
             ttk.Button(btns, text="Copy image", style="Accent.TButton", command=self.copy).pack(side="left")
         ttk.Button(btns, text="Save image…", command=self.save).pack(side="left", padx=px(8))
+        ttk.Separator(btns, orient="vertical").pack(side="left", fill="y", padx=px(8))
+        self.reddit_btn = ttk.Menubutton(btns, text="Post on Reddit  ▾")
+        menu = tk.Menu(self.reddit_btn, tearoff=False, bg=CARD, fg=gc.TEXT, activebackground=gc.ACCENT_DIM,
+                       activeforeground=gc.TEXT, bd=0, font=base_font(10))
+        for sub, what in share.SUBREDDITS:
+            menu.add_command(label=f"r/{sub}   {what}", command=lambda s=sub: self.post_reddit(s))
+        self.reddit_btn["menu"] = menu
+        self.reddit_btn.pack(side="left")
+        ttk.Button(btns, text="Share on Discord", command=self.post_discord).pack(side="left", padx=px(8))
         self.pillow_ok = share.pillow_available()
 
         # compare
@@ -1115,6 +1126,47 @@ class ShareTab(ttk.Frame):
             self.app.set_status("Card copied. Paste it into Discord or anywhere with Ctrl+V.")
         else:
             self.app.set_status("The card couldn't be copied. Use Save image instead.")
+
+    def _card_for_posting(self):
+        """Render the card, keep a copy in Pictures\\RigCheck, and put it on the clipboard.
+        Returns (saved path or None, copied?)."""
+        import share
+        import shutil as sh
+        if not self.card_path:
+            self.render_card()
+        if not self.card_path:
+            return None, False
+        name = re.sub(r"[^\w\- ]", "", self.name_var.get()).strip().replace(" ", "_") or "rig"
+        saved = os.path.join(share.default_card_folder(), f"{name}.png")
+        try:
+            sh.copyfile(self.card_path, saved)
+        except OSError:
+            saved = self.card_path
+        return saved, share.copy_image_to_clipboard(self.card_path)
+
+    def post_reddit(self, subreddit):
+        import share
+        import webbrowser
+        if not self.app.hw:
+            return
+        saved, copied = self._card_for_posting()
+        webbrowser.open(share.reddit_url(self.snapshot(), subreddit))
+        how = "click in the post and press Ctrl+V" if copied else "drag it into the post"
+        self.app.set_status(f"Reddit is open with your specs filled in. To add the card image, {how}"
+                            + (f" (it's also saved in {os.path.dirname(saved)})." if saved else "."))
+
+    def post_discord(self):
+        import share
+        if not self.app.hw:
+            return
+        saved, copied = self._card_for_posting()
+        where = share.open_discord()
+        place = "Discord" if where == "app" else "Discord in your browser"
+        if copied:
+            self.app.set_status(f"Card copied and {place} is opening. Pick a channel or DM and press Ctrl+V.")
+        else:
+            self.app.set_status(f"{place} is opening. Drag in your card from "
+                                f"{os.path.dirname(saved) if saved else 'Save image'}.")
 
     def save(self):
         import share

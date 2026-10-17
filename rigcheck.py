@@ -44,8 +44,8 @@ STATUS_STYLE = {  # icon, label, color
     "psu": ("!", "Needs a bigger power supply", COLORS["bad"]),
     "new": ("+", "Needs a new motherboard and RAM", COLORS["info"]),
 }
-PAGES = ["Monitor", "Overview", "Budget", "Health", "Performance", "Updates", "Share", "History", "Settings"]
-PAGE_TITLES = {"Monitor": "Live monitor", "Budget": "Budget planner"}
+PAGES = ["Monitor", "Overview", "Games", "Health", "Performance", "Updates", "Share", "History", "Settings"]
+PAGE_TITLES = {"Monitor": "Live monitor", "Games": "Game storage"}
 PROFILE = "gaming"  # RigCheck judges hardware for gaming
 GUIDE_FOR = {"RAM": ("RAM", "How to install memory"), "Storage": ("Storage", "How to install an SSD"),
              "GPU": ("GPU", "How to install a graphics card"), "CPU": ("CPU", "How to install a processor"),
@@ -324,7 +324,9 @@ class AdvisorApp(tk.Tk):
         self.monitor_tab = gui_monitor.MonitorTab(self.notebook, self)
         self.notebook.add(self.monitor_tab)
         self._build_overview()
-        self._build_budget()
+        import gui_games
+        self.games_tab = gui_games.GamesTab(self.notebook, self)
+        self.notebook.add(self.games_tab)
         self.health_tab = gui_tabs.HealthTab(self.notebook, self)
         self.perf_tab = gui_tabs.PerformanceTab(self.notebook, self)
         self.updates_tab = gui_tabs.UpdatesTab(self.notebook, self)
@@ -340,8 +342,16 @@ class AdvisorApp(tk.Tk):
         self.select_page(start if start in PAGES else "Overview")
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         gc.dark_title_bar(self)
-        self.after(200, self.start_scan)
+        try:
+            import prices
+            prices.load()           # newest saved price list, no waiting on the internet
+        except Exception:
+            pass
+        self.after(2000, self.refresh_prices)
+        self._show_last_scan()      # instant: show the previous scan right away
+        self.after(50, self.start_scan)  # then check the PC again in the background
         self.after(1500, self.check_app_update)
+        self.after(2500, self._offer_helper_removal)
 
     # ---------- shared helpers used by tabs ----------
     def set_status(self, text, base=False):
@@ -380,6 +390,28 @@ class AdvisorApp(tk.Tk):
             updater.cleanup_old()
         except Exception:
             pass
+
+    def refresh_prices(self, manual=False):
+        """Fetch the latest prices.json from GitHub in the background."""
+        import prices
+
+        def done(changed, err):
+            if manual:
+                if err:
+                    self.set_status("Couldn't download new prices. Showing prices from "
+                                    f"{hwa.parts_db.DB_DATE}.")
+                else:
+                    self.set_status(f"Prices are up to date ({hwa.parts_db.DB_DATE}).")
+            if changed and self.hw:
+                self.refresh_recommendations()
+            self._update_price_label()
+        in_thread(self, prices.refresh, done)
+
+    def _update_price_label(self):
+        import prices
+        if getattr(self, "price_label", None):
+            self.price_label.configure(text=f"Prices from {hwa.parts_db.DB_DATE}"
+                                            + (" (downloaded from GitHub)" if prices.source == "GitHub" else ""))
 
     def select_page(self, name):
         self.select_tab(PAGES.index(name))
@@ -492,6 +524,46 @@ class AdvisorApp(tk.Tk):
     def current_profile(self):
         return PROFILE
 
+    # ---------- removing the old sensor helper (1.8 to 1.10) ----------
+    def _offer_helper_removal(self):
+        """Earlier versions could install LibreHardwareMonitor, which Windows Defender flags.
+        Offer to remove it once per RigCheck version until it's gone."""
+        import cleanup
+        if self.settings.get("helper_offer_seen") == app_info.APP_VERSION:
+            return
+
+        def done(present, err):
+            if not present:
+                return
+            self.settings["helper_offer_seen"] = app_info.APP_VERSION
+            self.save_settings()
+            if messagebox.askyesno(
+                    "Remove the old sensor helper",
+                    "RigCheck no longer uses LibreHardwareMonitor, the sensor helper an earlier version set "
+                    "up. It's what causes the Windows Defender warnings.\n\nRemove it now? Windows will ask "
+                    "for permission once."):
+                self.remove_old_helper()
+        in_thread(self, cleanup.old_helper_present, done)
+
+    def remove_old_helper(self):
+        import cleanup
+        self.set_status("Removing the old sensor helper…")
+
+        def done(ok, err):
+            if not ok:
+                self.set_status("The old sensor helper wasn't removed. You can try again in Settings > Your data.")
+                return
+            btn = getattr(self.settings_tab, "helper_btn", None)
+            if btn is not None:
+                btn.destroy()
+            msg = "The old sensor helper is removed."
+            if cleanup.pawnio_installed():
+                msg += (" One more: PawnIO, a driver it installed, is still in your apps. To remove it, "
+                        "open Settings > Apps > Installed apps, find PawnIO and choose Uninstall.")
+            self.set_status(msg)
+            messagebox.showinfo("Sensor helper removed", msg)
+        in_thread(self, cleanup.remove_old_helper, done)
+
     def on_close(self):
         if self.perf_tab.monitor:
             self.perf_tab.monitor.stop()
@@ -572,14 +644,23 @@ class AdvisorApp(tk.Tk):
         left = ttk.Frame(body, style="Card.TFrame", padding=(px(18), px(12)))
         left.grid(row=1, column=0, sticky="nsew", padx=(0, px(16)))
         self.cards = {}
-        for key, title in [("cpu", "Processor"), ("gpu", "Graphics"), ("ram", "Memory"),
+        for key, title in [("cpu", "Processor"), ("gpu", "Graphics"), ("display", "Monitor"), ("ram", "Memory"),
                            ("storage", "Storage"), ("board", "Motherboard"), ("os", "System")]:
             ttk.Label(left, text=title, style="CardTitle.TLabel").pack(anchor="w", pady=(px(8), 0))
             lbl = ttk.Label(left, text="…", style="CardBody.TLabel", justify="left", wraplength=px(320))
             lbl.pack(anchor="w", fill="x", pady=(px(2), px(4)))
             self.cards[key] = lbl
-        left.bind("<Configure>", lambda e: [l.configure(wraplength=max(px(200), e.width - px(40)))
-                                            for l in self.cards.values()])
+            if key == "display":
+                self.display_box = ttk.Frame(left, style="Card.TFrame")
+                self.display_box.pack(anchor="w", fill="x")
+        self._card_wrap = px(320)
+
+        def wrap(e):
+            self._card_wrap = max(px(200), e.width - px(40))
+            for l in list(self.cards.values()) + list(self.display_box.winfo_children()):
+                if isinstance(l, ttk.Label):
+                    l.configure(wraplength=self._card_wrap)
+        left.bind("<Configure>", wrap)
         head = ttk.Frame(body)
         head.grid(row=0, column=1, sticky="ew", pady=(0, px(10)))
         ttk.Label(head, text="Upgrades", style="Section.TLabel").pack(side="left")
@@ -589,18 +670,45 @@ class AdvisorApp(tk.Tk):
         self.rec_out.grid(row=1, column=1, sticky="nsew")
 
     # ---------- scanning ----------
+    def _show_last_scan(self):
+        """Fill the window from the last saved scan of this same PC, so nothing waits on Windows."""
+        import platform
+        try:
+            with open(os.path.join(hw_store.data_dir(), "last_scan.json"), encoding="utf-8") as f:
+                saved = json.load(f)
+            hw = saved["hw"]
+            if hw.get("pc_name") != (platform.node() or None) or saved.get("version") != app_info.APP_VERSION:
+                return  # another computer or another RigCheck version: wait for a fresh scan
+        except (OSError, ValueError, KeyError, TypeError):
+            return
+        try:
+            self._scan_done(hw, None, cached=True)
+        except Exception:
+            self.hw = None  # a bad saved file never stops RigCheck opening
+
+    def _save_last_scan(self, hw):
+        try:
+            path = os.path.join(hw_store.data_dir(), "last_scan.json")
+            with open(path + ".tmp", "w", encoding="utf-8") as f:
+                json.dump({"version": app_info.APP_VERSION, "time": time.time(), "hw": hw}, f)
+            os.replace(path + ".tmp", path)
+        except (OSError, TypeError, ValueError):
+            pass
+
     def start_scan(self):
         self.scan_btn.configure(state="disabled")
         self.export_btn.configure(state="disabled")
-        self.set_status("Scanning your hardware. This takes a few seconds.")
+        if not self.hw:
+            self.set_status("Scanning your hardware. This takes a few seconds.")
         self.progress.pack(fill="both", expand=True)
         self.progress.start(12)
         in_thread(self, hwa.detect_all, self._scan_done)
 
-    def _scan_done(self, hw, err):
-        self.progress.stop()
-        self.progress.pack_forget()
-        self.scan_btn.configure(state="normal")
+    def _scan_done(self, hw, err, cached=False):
+        if not cached:
+            self.progress.stop()
+            self.progress.pack_forget()
+            self.scan_btn.configure(state="normal")
         if err:
             self.set_status("The scan didn't finish.")
             messagebox.showerror("RigCheck", f"The hardware scan stopped with an error:\n\n{err}")
@@ -612,17 +720,79 @@ class AdvisorApp(tk.Tk):
             " Some checks show more detail when RigCheck runs as administrator."
         pc = f", {hw['pc_name']}," if hw.get("pc_name") else ""
         self.set_status(f"Scanned this PC{pc} at {when}.{admin}", base=True)
+        if cached:
+            self.set_status(f"Showing your last scan{pc.rstrip(',')}. Checking for changes…", base=True)
         if "--updated-from" in sys.argv and not getattr(self, "_told_updated", False):
             self._told_updated = True
             self.set_status(f"Updated to RigCheck {app_info.APP_VERSION}. Scanned this PC{pc} at {when}.")
             self.after(20000, lambda: self.cleanup_after_update())
         for key, lines in hardware_lines(hw).items():
             self.cards[key].configure(text="\n".join(lines))
+        self.check_displays()
         self.refresh_recommendations()
 
         self.share_tab.refresh()
         self.monitor_tab.hw_ready()
-        self._record_scan()
+        if not cached:
+            self._record_scan()
+            self._save_last_scan(hw)
+
+    # ---------- monitor (display) check ----------
+    def check_displays(self):
+        import perf_checks
+        if hwa.SYSTEM != "Windows":
+            self.cards["display"].configure(text="Checked on Windows only")
+            return
+        in_thread(self, perf_checks.displays, self._show_displays)
+
+    def _show_displays(self, ds, err):
+        import perf_checks
+        for w in self.display_box.winfo_children():
+            w.destroy()
+        if err or not ds:
+            self.cards["display"].configure(text="Couldn't read the monitor settings")
+            return
+        ds = sorted(ds, key=lambda d: not d["primary"])
+        lines = []
+        for d in ds:
+            name = d["monitor"] if d["monitor"] and "generic" not in d["monitor"].lower() else \
+                ("Main monitor" if d["primary"] else "Second monitor")
+            lines.append(f"{name}: {d['width']}×{d['height']} at {d['hz']} Hz")
+        self.cards["display"].configure(text="\n".join(lines))
+        for d in ds:
+            issues, fix = perf_checks.display_issues(d, self.hw)
+            if not issues:
+                continue
+            prefix = "" if len(ds) == 1 else ("Main monitor: " if d["primary"] else "Second monitor: ")
+            for text in issues:
+                ttk.Label(self.display_box, text=prefix + text, style="CardWarn.TLabel", justify="left",
+                          wraplength=self._card_wrap).pack(anchor="w", fill="x", pady=(0, px(3)))
+            if fix:
+                w, h, hz = fix
+                link = ttk.Label(self.display_box, style="CardLink.TLabel", cursor="hand2",
+                                 text=f"Switch to {w}×{h} at {hz} Hz  ›")
+                link.pack(anchor="w", pady=(0, px(6)))
+                link.bind("<Button-1>", lambda _e, d=d, fix=fix: self.fix_display(d, fix))
+
+    def fix_display(self, d, fix):
+        import perf_checks
+        from gui_tabs import RefreshConfirm
+        w, h, hz = fix
+        old = (d["width"], d["height"], d["hz"])
+        if not messagebox.askyesno("Change monitor settings",
+                                   f"Switch this monitor to {w}×{h} at {hz} Hz?\n\nThe screen may go black "
+                                   "for a second. You'll be asked to keep it, and it switches back on its "
+                                   "own after 15 seconds if you don't answer."):
+            return
+        if not perf_checks.set_mode(d["device"], w, h, hz):
+            messagebox.showinfo("Monitor", "Windows didn't accept that setting. You can change it in "
+                                           "Settings > System > Display.")
+            return
+
+        def done(kept):
+            self.set_status(f"Monitor set to {w}×{h} at {hz} Hz." if kept else "Monitor settings put back.")
+            self.check_displays()
+        RefreshConfirm(self, d["device"], f"{w}×{h} at {hz} Hz", old, done)
 
     def _record_scan(self):
         summary = scan_summary(self.hw)
@@ -645,7 +815,6 @@ class AdvisorApp(tk.Tk):
         self.recs = hwa.recommend(self.hw, profile, self.settings)
         self.stop_preview()
         self._render_recs()
-        self._render_budget()
 
     def _render_recs(self):
         profile = self.current_profile()
@@ -694,8 +863,8 @@ class AdvisorApp(tk.Tk):
             o.write("Before you buy\n", "h2")
             for c in checks:
                 o.write(f"•  {c}\n", "muted")
-        o.write(f"\nPrices are estimates from {hwa.parts_db.DB_DATE} and change daily. "
-                "Plan a budget on the Budget page.\n", "small")
+        o.write(f"\nTypical lowest US prices from {hwa.parts_db.DB_DATE}. They change daily, so "
+                "compare before buying.\n", "small")
         o.done()
 
     @staticmethod
@@ -744,148 +913,6 @@ class AdvisorApp(tk.Tk):
         self.preview_bar.pack_forget()
         if self.hw:
             self.meter.set(component_ratings(self.hw, self.current_profile()))
-
-    # ---------- budget ----------
-    def _build_budget(self):
-        tab = ttk.Frame(self.notebook)
-        self.notebook.add(tab)
-        bar = ttk.Frame(tab)
-        bar.pack(fill="x", pady=(0, px(6)))
-        ttk.Label(bar, text="Budget  $").pack(side="left")
-        self.budget_var = tk.StringVar(value=str(self.settings.get("budget", 800)))
-        e = ttk.Entry(bar, textvariable=self.budget_var, width=8, font=number_font(12))
-        e.pack(side="left")
-        e.bind("<Return>", lambda _e: self._render_budget(save=True))
-        ttk.Button(bar, text="Plan upgrades", style="Accent.TButton",
-                   command=lambda: self._render_budget(save=True)).pack(side="left", padx=px(10))
-        ttk.Button(bar, text="Reset prices", command=self._reset_prices).pack(side="right")
-        self.sell_var = tk.BooleanVar(value=bool(self.settings.get("sell_old_parts", False)))
-        ttk.Checkbutton(bar, text="Count money from selling the parts I replace", variable=self.sell_var,
-                        command=lambda: self._render_budget(save=True)).pack(side="left", padx=px(14))
-        ttk.Label(tab, text="Prices are estimates. Memory and SSD prices are unusually high in 2026 "
-                            "because of a memory shortage, so double-click a price to enter what you "
-                            "see in stores.", style="Sub.TLabel", wraplength=px(900)).pack(
-            anchor="w", pady=(px(4), px(14)))
-        body = ttk.Frame(tab)
-        body.pack(fill="both", expand=True)
-        body.columnconfigure(0, weight=1, minsize=px(480))
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
-        frame, self.price_tree = make_tree(body, ["Part", "Component", "Price"], [220, 100, 100], 18)
-        frame.grid(row=0, column=0, sticky="nsew", padx=(0, px(16)))
-        self.price_tree.bind("<Double-1>", self._edit_price)
-        self.plan_out = RichText(body)
-        self.plan_out.grid(row=0, column=1, sticky="nsew")
-
-    def _render_budget(self, save=False):
-        try:
-            budget = int(float(self.budget_var.get()))
-        except ValueError:
-            budget = self.settings.get("budget", 800)
-        if save:
-            self.settings["budget"] = budget
-            self.settings["sell_old_parts"] = self.sell_var.get()
-            self.save_settings()
-        resale = self._resale() if self.sell_var.get() else {}
-        t = self.price_tree
-        t.delete(*t.get_children())
-        seen = set()
-        for rec in self.recs:
-            for p in rec["parts"]:
-                if p["name"] in seen:
-                    continue
-                seen.add(p["name"])
-                edited = p["name"] in (self.settings.get("price_overrides") or {})
-                price = (f"${p['price']:,}" + (" (yours)" if edited else "")) if p.get("price") else "?"
-                t.insert("", "end", iid=p["name"], text=p["name"], values=(rec["component"], price),
-                         tags=("odd",) if len(seen) % 2 == 0 else ())
-        if self.hw:
-            for comp, (desc, value) in self._resale(include_unknown=True).items():
-                t.insert("", "end", iid=f"sell:{comp}", text=f"Sell your {desc}",
-                         values=("Resale", f"+${value:,}" if value else "enter value"))
-        o = self.plan_out
-        o.clear()
-        if not self.hw:
-            o.done()
-            return
-        plans = hwa.plan_budget(self.recs, budget, {c: v[1] for c, v in resale.items()})
-        o.write(f"${budget:,}", "h1")
-        o.write("  best use of your budget\n", "muted")
-        if not plans:
-            cheapest = min((p["price"] for r in self.recs for p in r["parts"] if p.get("price")), default=None)
-            o.write("Nothing on the list fits this budget." +
-                    (f" The cheapest suggested part is about ${cheapest:,}." if cheapest else "") + "\n",
-                    "muted")
-        for i, plan in enumerate(plans):
-            o.write("\n", "gap")
-            o.write(("Best plan" if i == 0 else f"Alternative {i}") + "\n", "h2")
-            for pick in plan["picks"]:
-                for p in pick["parts"]:
-                    o.write(f"{pick['component']}  ", "muted")
-                    o.link(p["name"], p["url"], ("boldlink",))
-                    o.write(f"   ${p['price']:,}\n", "muted")
-                    if pick.get("resale"):
-                        o.write(f"After selling your old part for about ${pick['resale']:,}, this costs "
-                                f"about ${pick['cost']:,}.\n", "indent")
-                    if p.get("extra_cost"):
-                        o.write(f"Plus a {p['extra_note'][2:]} (about ${p['extra_cost']:,}), because "
-                                "your current power supply isn't enough for this card.\n", "indent")
-            sold = sum(p.get("resale") or 0 for p in plan["picks"])
-            o.write(f"Total about ${plan['total']:,}" + (" after selling old parts" if sold else "")
-                    + f", leaving ${plan['leftover']:,}\n", "muted")
-        free = [r for r in self.recs if r["priority"] == "FREE"]
-        if free:
-            o.write("\nDo the free fixes first: ", "bold")
-            o.write(", ".join(r["component"] for r in free) + " (see Overview).\n")
-        o.write("\nPlans fix urgent problems first, then add the most performance per dollar.\n", "small")
-        o.done()
-
-    def _resale(self, include_unknown=False):
-        """{component: (description, value)} for parts the current plan could replace."""
-        out = {}
-        overrides = self.settings.get("resale_overrides") or {}
-        comps = {r["component"] for r in self.recs if r["parts"]}
-        for comp in ("GPU", "CPU", "RAM"):
-            if comp not in comps:
-                continue
-            est = hwa.parts_db.estimate_resale(self.hw, comp)
-            if not est:
-                continue
-            desc = short_gpu(est[0]) if comp == "GPU" else short_cpu(est[0]) if comp == "CPU" else est[0]
-            value = overrides.get(comp, est[1])
-            if value or include_unknown:
-                out[comp] = (desc, value)
-        return out
-
-    def _edit_price(self, _e=None):
-        sel = self.price_tree.selection()
-        if not sel:
-            return
-        name = sel[0]
-        if name.startswith("sell:"):
-            comp = name[5:]
-            current = self._resale(include_unknown=True).get(comp, (None, 0))[1]
-            val = simpledialog.askinteger("Resale value", "What do you expect to get for it?",
-                                          initialvalue=current or 0, minvalue=0, parent=self)
-            if val is not None:
-                self.settings.setdefault("resale_overrides", {})[comp] = val
-                self.save_settings()
-                self._render_budget()
-            return
-        current = next((p["price"] for r in self.recs for p in r["parts"] if p["name"] == name), None)
-        val = simpledialog.askinteger("Edit price", f"Price you see for\n{name}",
-                                      initialvalue=current or 0, minvalue=0, parent=self)
-        if val is None:
-            return
-        self.settings.setdefault("price_overrides", {})[name] = val
-        self.save_settings()
-        self.refresh_recommendations()
-
-    def _reset_prices(self):
-        self.settings["price_overrides"] = {}
-        self.settings["resale_overrides"] = {}
-        self.save_settings()
-        self.refresh_recommendations()
 
     # ---------- history ----------
     def _build_history(self):

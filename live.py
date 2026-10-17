@@ -1,9 +1,10 @@
 """
 Live PC monitoring: CPU, GPU, memory, network, storage and top programs, once a second.
 
-Windows: one long-running PowerShell process reads Windows performance counters (and
-LibreHardwareMonitor's sensors when it's running, for CPU temperature, power and fans).
-nvidia-smi streams NVIDIA graphics card details. psutil, when installed, lists the
+Windows: one long-running PowerShell process reads Windows' own performance counters.
+Nothing extra is installed: processor temperature, power and fan speed aren't shown because
+Windows only exposes them through third-party hardware drivers. nvidia-smi (part of the
+NVIDIA driver) streams NVIDIA graphics card details. psutil, when installed, lists the
 programs using the most CPU and memory. Other systems use psutil for everything.
 """
 
@@ -17,7 +18,6 @@ import time
 
 import hw_advisor as hwa
 import hw_tools
-import sensors
 from hw_advisor import SYSTEM, NO_WINDOW, psutil, powershell_json
 
 WINDOWS = SYSTEM == "Windows" and os.name == "nt"
@@ -32,7 +32,6 @@ $counters = @('\Processor(*)\% Processor Time',
               '\PhysicalDisk(_Total)\Disk Read Bytes/sec',
               '\PhysicalDisk(_Total)\Disk Write Bytes/sec',
               '\PhysicalDisk(_Total)\% Idle Time')
-$i = 0; $sensors = @()
 while ($true) {
   $r = Get-Counter -Counter $counters -SampleInterval __IV__ -MaxSamples 1
   $o = @{cores=@(); total=0; perf=0; gpu=0; vram=0; rx=0; tx=0; dr=0; dw=0; idle=100}
@@ -49,12 +48,6 @@ while ($true) {
     elseif ($p -like '*disk write bytes/sec') { $o.dw = $v }
     elseif ($p -like '*% idle time') { $o.idle = $v }
   }
-  if ($i % 10 -eq 0) {
-    $sensors = @(Get-CimInstance -Namespace root/LibreHardwareMonitor -ClassName Sensor |
-      Where-Object { $_.SensorType -in @('Temperature','Fan','Power') } |
-      ForEach-Object { @{n=$_.Name; t=$_.SensorType; v=$_.Value; p=$_.Parent} })
-  }
-  $o.sensors = $sensors; $i++
   [Console]::Out.WriteLine(($o | ConvertTo-Json -Compress -Depth 4))
   [Console]::Out.Flush()
 }
@@ -109,33 +102,6 @@ def static_info(hw):
     return info
 
 
-def _pick_sensors(sensors):
-    """CPU temperature, power and fan speed (plus a non-NVIDIA GPU temp) from LibreHardwareMonitor."""
-    out = {}
-    if not sensors:
-        return out
-    if isinstance(sensors, dict):
-        sensors = [sensors]
-    cpu = [s for s in sensors if "cpu" in str(s.get("p", "")).lower()]
-    for pref in ("CPU Package", "Core (Tctl/Tdie)", "Core Max", "Core Average"):
-        t = next((s["v"] for s in cpu if s.get("t") == "Temperature" and s.get("n") == pref and s.get("v")), None)
-        if t:
-            out["cpu_temp"] = round(t, 1)
-            break
-    p = next((s["v"] for s in cpu if s.get("t") == "Power" and "package" in str(s.get("n", "")).lower()), None)
-    if p:
-        out["cpu_power"] = round(p, 1)
-    fans = [s for s in sensors if s.get("t") == "Fan" and s.get("v")]
-    if fans:
-        named = next((s for s in fans if "cpu" in str(s.get("n", "")).lower()), fans[0])
-        out["cpu_fan"] = round(named["v"])
-    gpu = [s for s in sensors if "gpu" in str(s.get("p", "")).lower() and s.get("t") == "Temperature"]
-    if gpu:
-        core = next((s for s in gpu if "core" in str(s.get("n", "")).lower()), gpu[0])
-        out["gpu_temp"] = round(core["v"], 1)
-    return out
-
-
 class LiveMonitor:
     """Calls on_sample(dict) about once a second until stopped."""
 
@@ -163,7 +129,6 @@ class LiveMonitor:
             self._procs.append(nv)
             threading.Thread(target=self._read_nvidia, args=(nv,), daemon=True).start()
         threading.Thread(target=self._slow_loop, daemon=True).start()
-        threading.Thread(target=self._sensor_loop, daemon=True).start()
         if WINDOWS:
             gpu_counters = "" if self._nvidia else (
                 "'\\GPU Engine(*engtype_3D)\\Utilization Percentage',\n"
@@ -205,19 +170,6 @@ class LiveMonitor:
             self._nv = {"gpu_load": num(f[0]), "gpu_temp": num(f[1]), "gpu_clock": num(f[2]),
                         "gpu_fan": num(f[3]), "gpu_power": num(f[4]), "vram_used": num(f[5]),
                         "vram_total": num(f[6])}
-
-    def _sensor_loop(self):
-        """Processor temperature, power and fan from LibreHardwareMonitor's local feed."""
-        try:
-            sensors.ensure_running()
-        except Exception:
-            pass
-        while not self._stop.is_set():
-            got = sensors.read()
-            self._extra["lhm"] = got or {}
-            self.sensor_feed = got is not None
-            if self._stop.wait(2 if got is not None else 4):
-                break
 
     def _slow_loop(self):
         """Top programs every 3 s, latency and drive space every 6 s."""
@@ -277,13 +229,7 @@ class LiveMonitor:
     def _emit(self, s):
         s = {k: v for k, v in s.items() if v is not None or k not in self._nv}
         s.update(self._nv)
-        extra = dict(self._extra)
-        feed = extra.pop("lhm", None) or {}
-        if self._nvidia:
-            feed.pop("gpu_temp", None)  # NVIDIA's own reading is used instead
-        s.update(extra)
-        s.update(feed)
-        s["sensor_feed"] = bool(getattr(self, "sensor_feed", False))
+        s.update(self._extra)
         s["t"] = time.time()
         self.on_sample(s)
 
@@ -307,7 +253,6 @@ class LiveMonitor:
                  "disk_read": o.get("dr"), "disk_write": o.get("dw"),
                  "disk_active": max(0, 100 - (o.get("idle") or 100)),
                  "ram_load": hw_tools._ram_percent()}
-            s.update(_pick_sensors(o.get("sensors")))
             total = self.info.get("ram_total")
             if total and s["ram_load"] is not None:
                 s["ram_used"] = total * s["ram_load"] / 100
@@ -332,9 +277,6 @@ class LiveMonitor:
                 busy = getattr(disk, "busy_time", None)
                 if busy is not None and getattr(disk0, "busy_time", None) is not None:
                     s["disk_active"] = min(100, (busy - disk0.busy_time) / (dt * 10))
-            temp, _src = hw_tools.cpu_temperature()
-            if temp is not None:
-                s["cpu_temp"] = temp
             net0, disk0, t0 = net, disk, t
             self._emit(s)
 
